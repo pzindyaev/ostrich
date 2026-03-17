@@ -1,0 +1,313 @@
+# Ostrich
+
+A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https://github.com/charmbracelet/bubbletea).
+
+```
+┌─ Ostrich — Virtual Machines ──────────────────────────────────────────────┐
+│                                                                             │
+│  debian-12             ● running  (PID 94231)   CPU: 2  RAM: 2048  Disk: 20 GiB │
+│  ubuntu-24             ● stopped                CPU: 4  RAM: 4096  Disk: 40 GiB │
+│  windows-11            ● stopped                CPU: 8  RAM: 8192  Disk: 80 GiB │
+│                                                                             │
+│  j/k: navigate  g/G: top/bottom  ^d/^u: half-page  l/enter: open          │
+│  n: new  s: start  x: stop  d: delete  r: refresh  q: quit                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Features
+
+- **Create VMs** — guided multi-step form for CPU, RAM, disk, networking, and VNC
+- **Start / stop VMs** — QEMU processes are detached and survive TUI exit
+- **Live console view** — serial console output streamed in the detail screen, auto-refreshed every 2 seconds
+- **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
+- **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
+- **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
+- **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
+- **YAML config per VM** — human-readable, hand-editable `vm.yaml` in each VM folder
+- **Vim keybindings** throughout
+
+## Requirements
+
+| Dependency | Purpose |
+|---|---|
+| `qemu-system-*` | Running virtual machines |
+| `qemu-img` | Creating qcow2 disk images |
+| Go 1.21+ | Building from source |
+
+Install QEMU on common distros:
+
+```bash
+# Debian / Ubuntu
+sudo apt install qemu-system-x86 qemu-utils
+
+# Fedora / RHEL
+sudo dnf install qemu-system-x86 qemu-img
+
+# Arch
+sudo pacman -S qemu-full
+
+# macOS (Homebrew)
+brew install qemu
+```
+
+## Installation
+
+```bash
+git clone https://github.com/pzindyaev/ostrich
+cd ostrich
+go build -o ostrich .
+./ostrich
+```
+
+Or install directly to `$GOPATH/bin`:
+
+```bash
+go install github.com/pzindyaev/ostrich@latest
+```
+
+## First Run
+
+On first launch Ostrich shows a setup wizard asking for a **VM storage directory**. All VM sub-folders will be created here. The choice is saved to `~/.config/ostrich/config.json` and never asked again.
+
+```
+  Ostrich — QEMU Manager
+  First-run setup
+
+  VM Storage Directory
+  Each VM will get its own sub-folder here containing its disk and config.
+
+  > ~/VMs
+
+  Enter — confirm   Ctrl+C — quit
+```
+
+The directory is created automatically if it does not exist.
+
+## Usage
+
+### VM List (main screen)
+
+The main screen lists all VMs with their running status and resource summary.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move cursor down |
+| `k` / `↑` | Move cursor up |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `Ctrl-d` | Half-page down |
+| `Ctrl-u` | Half-page up |
+| `l` / `Enter` | Open VM detail |
+| `n` | Create new VM |
+| `s` | Start selected VM |
+| `x` | Stop selected VM |
+| `d` | Delete selected VM (asks confirmation) |
+| `r` | Refresh list and statuses |
+| `q` | Quit |
+
+### VM Detail screen
+
+Shows configuration, running state and a scrollable view of the serial console output. The console refreshes automatically every 2 seconds.
+
+| Key | Action |
+|-----|--------|
+| `s` | Start VM (when stopped) |
+| `x` | Stop VM (when running) |
+| `c` | **Connect to serial console interactively** (requires `socat`) |
+| `v` | **Launch VNC viewer** for this VM (requires VNC enabled and a VNC viewer installed) |
+| `j` / `↓` | Scroll console down |
+| `k` / `↑` | Scroll console up |
+| `Ctrl-d` / `Ctrl-u` | Half-page scroll |
+| `Ctrl-f` / `Ctrl-b` | Full-page scroll |
+| `g` | Scroll to top |
+| `G` | Scroll to bottom |
+| `r` | Force console refresh |
+| `q` / `h` / `Esc` | Back to VM list |
+
+### Create VM form
+
+A linear 7-step wizard. Text input fields accept free typing; the network selector uses `h/l` or arrow keys.
+
+| Step | Field | Notes |
+|------|-------|-------|
+| 1 | VM Name | Letters, digits, hyphens, underscores |
+| 2 | CPU Cores | Positive integer, e.g. `2` |
+| 3 | RAM (MiB) | Minimum 64, e.g. `2048` for 2 GiB |
+| 4 | Disk Size (GiB) | Minimum 1, e.g. `20` |
+| 5 | Boot ISO | Full path to an `.iso` file, or leave blank |
+| 6 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
+| 7 | VNC Display Number | `0` to disable; `1`–`99` enables VNC on TCP port `5900+N` |
+| 8 | Confirm | Review and submit |
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Enter` / `j` / `↓` | Next field |
+| `Shift-Tab` / `k` / `↑` | Previous field |
+| `h` / `l` / `←` / `→` | Cycle network type (step 6 only) |
+| `Esc` | Cancel and return to VM list |
+
+## VM Storage Layout
+
+```
+~/VMs/                          ← configured on first run
+├── debian-12/
+│   ├── vm.yaml                 ← VM configuration (human-editable)
+│   ├── disk.qcow2              ← QEMU qcow2 disk image
+│   ├── console.log             ← serial console log (written while running)
+│   ├── serial.sock             ← serial console Unix socket (interactive, while running)
+│   ├── qemu.pid                ← PID of the running QEMU process
+│   └── qemu-monitor.sock       ← QEMU monitor Unix socket
+└── ubuntu-24/
+    ├── vm.yaml
+    ├── disk.qcow2
+    ├── console.log
+    ├── serial.sock
+    ├── qemu.pid
+    └── qemu-monitor.sock
+```
+
+## VM Configuration File
+
+Each VM is described by a `vm.yaml` in its directory. The file is written by the create wizard but can be edited by hand — changes take effect the next time the VM is started.
+
+```yaml
+name: debian-12
+cpu: 2
+ram: 2048        # MiB
+disk_size: 20    # GiB (informational; actual size lives in disk.qcow2)
+arch: x86_64
+cdrom_path: /home/user/iso/debian-12.iso   # omit after install
+network:
+  type: user     # user | tap | none
+  mac: 52:54:00:ab:cd:ef
+  port_forwards:
+    - host: 2222
+      guest: 22
+      proto: tcp
+    - host: 8080
+      guest: 80
+      proto: tcp
+vnc_port: 1      # VNC display 1 → TCP 5901; omit or set 0 to disable
+created_at: 2026-03-17T09:00:00Z
+```
+
+### Network modes
+
+| Mode | Description | Requirements |
+|------|-------------|--------------|
+| `user` | SLIRP/NAT — works out of the box, no host privileges required | none |
+| `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist on the host; may need root or `CAP_NET_ADMIN` |
+| `none` | No network interface attached | — |
+
+Port forwards (`port_forwards`) are only used in `user` mode. They map a host TCP/UDP port to a guest port, e.g. `host: 2222 → guest: 22` lets you `ssh -p 2222 localhost` to reach the VM's SSH daemon.
+
+## Serial Console
+
+Each VM's serial port is connected to a Unix socket (`serial.sock`) and simultaneously logged to `console.log`.
+
+```
+-chardev socket,id=serial0,path=<serial.sock>,server=on,wait=off,logfile=<console.log>
+-serial chardev:serial0
+```
+
+This means:
+
+- The **detail screen** always shows the last 200 lines of `console.log`, auto-refreshed every 2 seconds — no connection needed.
+- Pressing **`c`** in the detail screen suspends the TUI and drops you into a live, bidirectional terminal session with the VM's serial console. Press **Ctrl-`]`** to disconnect and return to Ostrich.
+
+The interactive connection uses `socat`:
+
+```bash
+# What Ostrich runs internally when you press c:
+socat -,escape=0x1d UNIX-CONNECT:~/VMs/debian-12/serial.sock
+
+# You can also connect from a second terminal at any time:
+socat -,raw,echo=0 UNIX-CONNECT:~/VMs/debian-12/serial.sock
+```
+
+Install `socat` if not already present:
+
+```bash
+sudo apt install socat      # Debian/Ubuntu
+sudo dnf install socat      # Fedora
+brew install socat          # macOS
+```
+
+> **Note:** Only one client can connect to the socket at a time. If you have an active `socat` session from the TUI, a second terminal connection will block until you disconnect.
+
+## VNC Display
+
+Set `vnc_port` to a display number (1–99) to enable a VNC server for the VM. Ostrich passes `-vnc 127.0.0.1:<n>` to QEMU, binding the VNC server to localhost on TCP port `5900 + n`.
+
+With VNC enabled, pressing **`v`** in the detail screen launches a VNC viewer in the background (the TUI stays open).
+
+```
+VNC display 1  →  TCP port 5901  →  connect with: vncviewer 127.0.0.1::5901
+```
+
+Ostrich tries these viewers in order: `vncviewer`, `tigervnc`, `xtightvncviewer`, `krdc`, `vinagre`, `remmina`.
+
+Install TigerVNC (recommended):
+
+```bash
+sudo apt install tigervnc-viewer    # Debian/Ubuntu
+sudo dnf install tigervnc           # Fedora
+brew install --cask tigervnc-viewer # macOS
+```
+
+To connect manually from another machine (replace `<host>` and `<n>`):
+
+```bash
+# Full port form (unambiguous, works with all viewers):
+vncviewer <host>::<port>
+# e.g. for display 1:
+vncviewer 127.0.0.1::5901
+```
+
+> **Security:** VNC is bound to `127.0.0.1` only. To expose it remotely, use an SSH tunnel: `ssh -L 5901:127.0.0.1:5901 user@host`, then `vncviewer 127.0.0.1:1`.
+
+## QEMU Process Model
+
+- QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits.**
+- The PID is written to `qemu.pid`; liveness is checked with `kill -0` each time the list or detail screen refreshes.
+- Stop sends `SIGTERM` and waits up to 5 seconds; if the process is still alive it sends `SIGKILL`.
+- The serial console (`-serial file:console.log`) captures all text output from the VM (GRUB, kernel messages, login prompt, shell). This is what the detail screen displays.
+- The QEMU monitor socket (`qemu-monitor.sock`) is available for direct interaction via `socat` or `nc`:
+
+  ```bash
+  socat - UNIX-CONNECT:~/VMs/debian-12/qemu-monitor.sock
+  ```
+
+## App Configuration
+
+Stored at `~/.config/ostrich/config.json`:
+
+```json
+{
+  "vm_storage_path": "/home/user/VMs"
+}
+```
+
+To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again.
+
+## Project Structure
+
+```
+ostrich/
+├── main.go
+├── go.mod
+└── internal/
+    ├── config/
+    │   └── config.go        # app config load/save
+    ├── vm/
+    │   ├── vm.go            # VMConfig struct, YAML schema, path helpers
+    │   ├── manager.go       # list / create / delete VMs, qemu-img wrapper
+    │   └── process.go       # start / stop / status, console log reader
+    └── tui/
+        ├── app.go           # root Bubbletea model, screen router
+        ├── styles.go        # Lipgloss colour palette and styles
+        ├── setup.go         # first-run wizard
+        ├── list.go          # VM list screen
+        ├── create.go        # VM creation form
+        └── detail.go        # VM detail + live console view
+```
