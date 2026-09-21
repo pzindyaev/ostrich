@@ -99,6 +99,7 @@ The main screen lists all VMs with their running status and resource summary.
 | `Ctrl-u` | Half-page up |
 | `l` / `Enter` | Open VM detail |
 | `n` | Create new VM |
+| `e` | Edit selected VM |
 | `s` | Start selected VM |
 | `x` | Stop selected VM |
 | `d` | Delete selected VM (asks confirmation) |
@@ -113,6 +114,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 |-----|--------|
 | `s` | Start VM (when stopped) |
 | `x` | Stop VM (when running) |
+| `e` | Edit VM properties |
 | `c` | **Connect to serial console interactively** (requires `socat`) |
 | `v` | **Launch VNC viewer** for this VM (requires VNC enabled and a VNC viewer installed) |
 | `j` / `↓` | Scroll console down |
@@ -145,6 +147,31 @@ A linear 7-step wizard. Text input fields accept free typing; the network select
 | `Shift-Tab` / `k` / `↑` | Previous field |
 | `h` / `l` / `←` / `→` | Cycle network type (step 6 only) |
 | `Esc` | Cancel and return to VM list |
+
+### Edit VM form
+
+Press `e` on the list or detail screen to edit an existing VM. All properties are shown on one page, pre-filled with the current values.
+
+| Field | Notes |
+|-------|-------|
+| Name | Renames the VM directory; VM must be stopped |
+| CPU Cores / RAM (MiB) | Same rules as the create form |
+| Disk Size (GiB) | Can only grow (`qemu-img resize`); VM must be stopped. The guest still has to extend its own partitions/filesystem |
+| Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation) |
+| Network | `user (NAT)` · `tap (bridge)` · `none` |
+| MAC Address | Leave blank to generate a new random one |
+| Port Forwards | `user` mode only. Comma-separated `[tcp\|udp:]host:guest`, e.g. `2222:22, udp:5353:53` |
+| VNC Display | `0` to disable; `1`–`99` |
+
+Changes to a running VM are saved but only take effect the next time it is started.
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Enter` / `↓` | Next field |
+| `Shift-Tab` / `↑` | Previous field |
+| `h` / `l` / `←` / `→` | Cycle network type |
+| `Ctrl-s` (or `Enter` on **Save**) | Save changes |
+| `Esc` | Cancel and return to VM detail |
 
 ## VM Storage Layout
 

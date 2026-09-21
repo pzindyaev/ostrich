@@ -78,6 +78,57 @@ func (m *Manager) Create(cfg *VMConfig) error {
 	return nil
 }
 
+// Update applies an edited config to the existing VM named oldName. It grows
+// the disk image and renames the VM directory as needed, then rewrites vm.yaml.
+// Renaming and disk resizing require the VM to be stopped; other changes to a
+// running VM take effect the next time it is started.
+func (m *Manager) Update(oldName string, cfg *VMConfig) error {
+	old, err := LoadConfig(m.StoragePath, oldName)
+	if err != nil {
+		return fmt.Errorf("load VM config: %w", err)
+	}
+
+	renamed := cfg.Name != oldName
+	resized := cfg.DiskSize != old.DiskSize
+
+	if cfg.DiskSize < old.DiskSize {
+		return fmt.Errorf("disk can only grow (currently %d GiB) — shrinking would destroy data", old.DiskSize)
+	}
+	if renamed && m.Exists(cfg.Name) {
+		return fmt.Errorf("a VM named %q already exists", cfg.Name)
+	}
+	if renamed || resized {
+		if info, err := Status(m.StoragePath, oldName); err == nil && info.Status == StatusRunning {
+			return fmt.Errorf("stop the VM before changing its name or disk size")
+		}
+	}
+	if cfg.Network.MAC == "" {
+		cfg.Network.MAC = randomMAC()
+	}
+
+	if resized {
+		diskPath := DiskPath(m.StoragePath, oldName)
+		out, err := exec.Command("qemu-img", "resize", diskPath, fmt.Sprintf("%dG", cfg.DiskSize)).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("resize disk image: %w\n%s", err, out)
+		}
+	}
+
+	if renamed {
+		if err := os.Rename(VMDir(m.StoragePath, oldName), VMDir(m.StoragePath, cfg.Name)); err != nil {
+			// Keep vm.yaml truthful about the disk we may have just grown.
+			old.DiskSize = cfg.DiskSize
+			_ = SaveConfig(m.StoragePath, old)
+			return fmt.Errorf("rename VM directory: %w", err)
+		}
+	}
+
+	if err := SaveConfig(m.StoragePath, cfg); err != nil {
+		return fmt.Errorf("save VM config: %w", err)
+	}
+	return nil
+}
+
 // Delete stops the VM (if running) then removes its directory.
 func (m *Manager) Delete(name string) error {
 	_ = Stop(m.StoragePath, name) // best-effort stop

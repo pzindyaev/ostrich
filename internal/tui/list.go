@@ -158,6 +158,11 @@ func (m VMListModel) handleKey(msg tea.KeyMsg) (VMListModel, tea.Cmd) {
 			name := m.cfgs[m.cursor].Name
 			return m, func() tea.Msg { return NavigateMsg{To: screenDetail, VMName: name} }
 		}
+	case "e":
+		if len(m.cfgs) > 0 {
+			name := m.cfgs[m.cursor].Name
+			return m, func() tea.Msg { return NavigateMsg{To: screenEdit, VMName: name} }
+		}
 	case "s":
 		if len(m.cfgs) > 0 {
 			cfg := m.cfgs[m.cursor]
@@ -262,6 +267,7 @@ func (m VMListModel) View() string {
 		"^d/^u: half-page",
 		"l/enter: open",
 		"n: new",
+		"e: edit",
 		"s: start",
 		"x: stop",
 		"d: delete",

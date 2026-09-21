@@ -97,6 +97,7 @@ func NewCreateVMModel(mgr *vm.Manager, width, height int) CreateVMModel {
 		t.Width = 45
 		inputs[i] = t
 	}
+	inputs[0].Focus()
 
 	return CreateVMModel{
 		step:   stepName,
@@ -108,7 +109,7 @@ func NewCreateVMModel(mgr *vm.Manager, width, height int) CreateVMModel {
 }
 
 func (m CreateVMModel) Init() tea.Cmd {
-	return m.inputs[0].Focus()
+	return textinput.Blink
 }
 
 func (m CreateVMModel) Update(msg tea.Msg) (CreateVMModel, tea.Cmd) {
@@ -225,14 +226,8 @@ func (m CreateVMModel) validateStep(s createStep) error {
 	val := strings.TrimSpace(m.inputs[idx].Value())
 	switch s {
 	case stepName:
-		if val == "" {
-			return fmt.Errorf("name cannot be empty")
-		}
-		for _, c := range val {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '-' || c == '_') {
-				return fmt.Errorf("name may only contain letters, digits, hyphens and underscores")
-			}
+		if err := validateVMName(val); err != nil {
+			return err
 		}
 		if m.mgr.Exists(val) {
 			return fmt.Errorf("a VM named %q already exists", val)
@@ -381,6 +376,20 @@ func (m CreateVMModel) View() string {
 	b.WriteString(styleHelp.Render("  " + keyHelp))
 
 	return lipgloss.NewStyle().Width(m.width).Render(b.String())
+}
+
+// validateVMName checks that a VM name is non-empty and filesystem-safe.
+func validateVMName(val string) error {
+	if val == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	for _, c := range val {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return fmt.Errorf("name may only contain letters, digits, hyphens and underscores")
+		}
+	}
+	return nil
 }
 
 func ifEmpty(s, fallback string) string {

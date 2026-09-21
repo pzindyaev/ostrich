@@ -13,12 +13,13 @@ const (
 	screenList
 	screenCreate
 	screenDetail
+	screenEdit
 )
 
 // NavigateMsg is returned by sub-models to request a screen transition.
 type NavigateMsg struct {
 	To     screen
-	VMName string // used when navigating to screenDetail
+	VMName string // used when navigating to screenDetail / screenEdit
 }
 
 // App is the root Bubbletea model. It owns all sub-models and delegates
@@ -35,6 +36,7 @@ type App struct {
 	list   VMListModel
 	create CreateVMModel
 	detail VMDetailModel
+	edit   EditVMModel
 }
 
 // NewApp constructs the root model. It detects first-run by checking for config.
@@ -96,6 +98,8 @@ func (m App) View() string {
 		return m.create.View()
 	case screenDetail:
 		return m.detail.View()
+	case screenEdit:
+		return m.edit.View()
 	}
 	return ""
 }
@@ -114,6 +118,9 @@ func (m App) propagateSize() (tea.Model, tea.Cmd) {
 		m.create.height = m.height
 	case screenDetail:
 		m.detail.setSize(m.width, m.height)
+	case screenEdit:
+		m.edit.width = m.width
+		m.edit.height = m.height
 	}
 	return m, cmd
 }
@@ -130,6 +137,8 @@ func (m App) delegateUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.create, cmd = m.create.Update(msg)
 	case screenDetail:
 		m.detail, cmd = m.detail.Update(msg)
+	case screenEdit:
+		m.edit, cmd = m.edit.Update(msg)
 	}
 	return m, cmd
 }
@@ -175,6 +184,17 @@ func (m App) handleNavigate(msg NavigateMsg) (tea.Model, tea.Cmd) {
 		m.detail = NewVMDetailModel(cfg, m.appCfg.VMStoragePath, m.width, m.height)
 		m.screen = screenDetail
 		return m, m.detail.Init()
+
+	case screenEdit:
+		cfg, err := vm.LoadConfig(m.appCfg.VMStoragePath, msg.VMName)
+		if err != nil {
+			m.list = NewVMListModel(m.vmMgr, m.width, m.height)
+			m.screen = screenList
+			return m, m.list.Init()
+		}
+		m.edit = NewEditVMModel(m.vmMgr, cfg, m.width, m.height)
+		m.screen = screenEdit
+		return m, m.edit.Init()
 	}
 	return m, nil
 }

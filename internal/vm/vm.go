@@ -1,8 +1,12 @@
 package vm
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -22,6 +26,56 @@ type PortForward struct {
 	Host  int    `yaml:"host"`
 	Guest int    `yaml:"guest"`
 	Proto string `yaml:"proto"` // "tcp" or "udp"
+}
+
+// ParsePortForwards parses a comma-separated list of "[proto:]host:guest"
+// entries, e.g. "2222:22, udp:5353:53". Proto defaults to tcp.
+func ParsePortForwards(s string) ([]PortForward, error) {
+	var fwds []PortForward
+	for _, entry := range strings.Split(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.Split(entry, ":")
+		proto := "tcp"
+		if len(parts) == 3 {
+			proto = strings.ToLower(parts[0])
+			parts = parts[1:]
+		}
+		if len(parts) != 2 || (proto != "tcp" && proto != "udp") {
+			return nil, fmt.Errorf("invalid port forward %q — expected [tcp|udp:]host:guest", entry)
+		}
+		host, err1 := strconv.Atoi(parts[0])
+		guest, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil || host < 1 || host > 65535 || guest < 1 || guest > 65535 {
+			return nil, fmt.Errorf("invalid port forward %q — ports must be 1–65535", entry)
+		}
+		fwds = append(fwds, PortForward{Host: host, Guest: guest, Proto: proto})
+	}
+	return fwds, nil
+}
+
+// FormatPortForwards is the inverse of ParsePortForwards.
+func FormatPortForwards(fwds []PortForward) string {
+	var parts []string
+	for _, pf := range fwds {
+		proto := pf.Proto
+		if proto == "" {
+			proto = "tcp"
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%d", proto, pf.Host, pf.Guest))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ValidateMAC checks that s is a 48-bit MAC address.
+func ValidateMAC(s string) error {
+	hw, err := net.ParseMAC(s)
+	if err != nil || len(hw) != 6 {
+		return fmt.Errorf("invalid MAC address %q — expected e.g. 52:54:00:12:34:56", s)
+	}
+	return nil
 }
 
 // NetworkConfig holds networking parameters for a VM.

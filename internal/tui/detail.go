@@ -49,7 +49,7 @@ type VMDetailModel struct {
 func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) VMDetailModel {
 	vpHeight := consoleViewHeight
 	if height > 0 {
-		vpHeight = height - 18
+		vpHeight = height - 19
 		if vpHeight < 5 {
 			vpHeight = 5
 		}
@@ -69,7 +69,7 @@ func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) V
 func (m *VMDetailModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
-	vpHeight := h - 18
+	vpHeight := h - 19
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
@@ -205,6 +205,10 @@ func (m VMDetailModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return detailActionOKMsg{fmt.Sprintf("launched %s → port %d", filepath.Base(path), 5900+port)}
 		}
 
+	case "e":
+		name := m.cfg.Name
+		return func() tea.Msg { return NavigateMsg{To: screenEdit, VMName: name} }
+
 	case "r":
 		return refreshConsoleCmd(m.storagePath, m.cfg.Name)
 
@@ -249,8 +253,9 @@ func (m VMDetailModel) View() string {
 	}
 
 	info := fmt.Sprintf(
-		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  Net:    %s\n  VNC:    %s",
-		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize, netInfo, vncInfo,
+		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  VNC:    %s",
+		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
+		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, vncInfo,
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n\n")
@@ -278,7 +283,7 @@ func (m VMDetailModel) View() string {
 
 	helpItems := []string{
 		"s: start", "x: stop",
-		"c: serial console", "v: VNC viewer",
+		"e: edit", "c: serial console", "v: VNC viewer",
 		"j/k: scroll", "g/G: top/bottom", "r: refresh",
 		"q/h/Esc: back",
 	}
