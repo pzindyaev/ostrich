@@ -23,8 +23,9 @@ const (
 
 type consolePollMsg struct{}
 type consoleRefreshedMsg struct {
-	lines  []string
-	status vm.ProcessInfo
+	lines   []string
+	status  vm.ProcessInfo
+	guestIP string
 }
 type detailActionErrMsg struct{ err error }
 type detailActionOKMsg struct{ action string }
@@ -36,6 +37,7 @@ type VMDetailModel struct {
 	cfg          *vm.VMConfig
 	storagePath  string
 	status       vm.ProcessInfo
+	guestIP      string
 	vp           viewport.Model
 	consoleLines []string
 	err          string
@@ -49,7 +51,7 @@ type VMDetailModel struct {
 func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) VMDetailModel {
 	vpHeight := consoleViewHeight
 	if height > 0 {
-		vpHeight = height - 19
+		vpHeight = height - 20
 		if vpHeight < 5 {
 			vpHeight = 5
 		}
@@ -69,7 +71,7 @@ func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) V
 func (m *VMDetailModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
-	vpHeight := h - 19
+	vpHeight := h - 20
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
@@ -78,7 +80,7 @@ func (m *VMDetailModel) setSize(w, h int) {
 }
 
 func (m VMDetailModel) Init() tea.Cmd {
-	return tea.Batch(refreshConsoleCmd(m.storagePath, m.cfg.Name), pollTickCmd())
+	return tea.Batch(refreshConsoleCmd(m.storagePath, m.cfg), pollTickCmd())
 }
 
 func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
@@ -89,10 +91,11 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case consolePollMsg:
-		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg.Name)
+		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg)
 
 	case consoleRefreshedMsg:
 		m.status = msg.status
+		m.guestIP = msg.guestIP
 		m.consoleLines = msg.lines
 		content := "(no console output yet)"
 		if len(msg.lines) > 0 {
@@ -108,12 +111,12 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 	case detailActionErrMsg:
 		m.err = msg.err.Error()
 		m.notice = ""
-		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg.Name)
+		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg)
 
 	case detailActionOKMsg:
 		m.notice = "✓ " + msg.action
 		m.err = ""
-		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg.Name)
+		ourCmd = refreshConsoleCmd(m.storagePath, m.cfg)
 
 	case tea.KeyMsg:
 		ourCmd = m.handleKey(msg)
@@ -210,7 +213,7 @@ func (m VMDetailModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return func() tea.Msg { return NavigateMsg{To: screenEdit, VMName: name} }
 
 	case "r":
-		return refreshConsoleCmd(m.storagePath, m.cfg.Name)
+		return refreshConsoleCmd(m.storagePath, m.cfg)
 
 	case "G":
 		m.vp.GotoBottom()
@@ -247,15 +250,32 @@ func (m VMDetailModel) View() string {
 		netInfo += " [" + strings.Join(fwds, ", ") + "]"
 	}
 
+	ipInfo := "—"
+	if m.status.Status == vm.StatusRunning {
+		switch m.cfg.Network.Type {
+		case vm.NetworkUser:
+			// Fixed SLIRP lease, only reachable from the host through port forwards.
+			ipInfo = fmt.Sprintf("%s (DHCP, guest-internal)  gw %s", m.guestIP, vm.UserNetGateway)
+			for _, pf := range m.cfg.Network.PortForwards {
+				if pf.Guest == 22 && (pf.Proto == "" || pf.Proto == "tcp") {
+					ipInfo += fmt.Sprintf("  —  ssh -p %d localhost", pf.Host)
+					break
+				}
+			}
+		case vm.NetworkTap:
+			ipInfo = ifEmpty(m.guestIP, fmt.Sprintf("(not seen yet — looking for %s)", m.cfg.Network.MAC))
+		}
+	}
+
 	vncInfo := "disabled"
 	if m.cfg.VNCPort > 0 {
 		vncInfo = fmt.Sprintf("127.0.0.1:%d  (TCP port %d)", m.cfg.VNCPort, 5900+m.cfg.VNCPort)
 	}
 
 	info := fmt.Sprintf(
-		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  VNC:    %s",
+		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  IP:     %s\n  VNC:    %s",
 		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
-		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, vncInfo,
+		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, ipInfo, vncInfo,
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n\n")
@@ -337,10 +357,14 @@ func pollTickCmd() tea.Cmd {
 	})
 }
 
-func refreshConsoleCmd(storagePath, name string) tea.Cmd {
+func refreshConsoleCmd(storagePath string, cfg *vm.VMConfig) tea.Cmd {
 	return func() tea.Msg {
-		lines, _ := vm.ReadConsoleTail(storagePath, name, consoleTailLines)
-		info, _ := vm.Status(storagePath, name)
-		return consoleRefreshedMsg{lines: lines, status: info}
+		lines, _ := vm.ReadConsoleTail(storagePath, cfg.Name, consoleTailLines)
+		info, _ := vm.Status(storagePath, cfg.Name)
+		var ip string
+		if info.Status == vm.StatusRunning {
+			ip = vm.GuestIP(cfg)
+		}
+		return consoleRefreshedMsg{lines: lines, status: info, guestIP: ip}
 	}
 }

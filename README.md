@@ -223,10 +223,65 @@ created_at: 2026-03-17T09:00:00Z
 | Mode | Description | Requirements |
 |------|-------------|--------------|
 | `user` | SLIRP/NAT — works out of the box, no host privileges required | none |
-| `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist on the host; may need root or `CAP_NET_ADMIN` |
+| `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist and be allowed in `/etc/qemu/bridge.conf` — see [Setting up `br0`](#setting-up-br0) |
 | `none` | No network interface attached | — |
 
 Port forwards (`port_forwards`) are only used in `user` mode. They map a host TCP/UDP port to a guest port, e.g. `host: 2222 → guest: 22` lets you `ssh -p 2222 localhost` to reach the VM's SSH daemon.
+
+In `user` mode each VM sits on its own private SLIRP network (`10.0.2.0/24`), so the guest's DHCP address is always `10.0.2.15` (gateway `10.0.2.2`). The detail view shows it while the VM is running. The address is internal to QEMU and not reachable from the host — use port forwards to get in.
+
+In `tap` mode the address comes from whatever DHCP server serves the bridge. The detail view finds it by the VM's MAC, checking local dnsmasq lease files first and then the host's ARP table (`/proc/net/arp`, Linux only). With the NetworkManager setup below the lease file is root-only, so the ARP table is what gets used; the entry appears as soon as the guest has completed DHCP.
+
+### Setting up `br0`
+
+`tap` mode starts QEMU with `-netdev bridge,id=net0,br=br0`. The tap device is created by the setuid `qemu-bridge-helper`, so ostrich itself needs no root — but the bridge has to exist and the helper has to be told it may use it.
+
+**1. Allow the bridge for the helper** (all setups):
+
+```sh
+echo 'allow br0' | sudo tee -a /etc/qemu/bridge.conf
+ls -l /usr/lib/qemu/qemu-bridge-helper    # must be setuid root (-rwsr-xr-x)
+```
+
+**2. Create the bridge.** Pick one:
+
+*a) NAT'd bridge via NetworkManager* — works on any uplink, including Wi-Fi (which cannot be enslaved to a bridge) and laptops that roam between networks. NetworkManager runs a private dnsmasq (DHCP + DNS) on the bridge, masquerades traffic out of whatever the current uplink is, and enables forwarding on the interfaces involved. VMs can reach each other, the host and the internet; the host can reach the VMs; the LAN cannot.
+
+```sh
+sudo nmcli con add type bridge ifname br0 con-name br0 \
+    ipv4.method shared ipv4.addresses 192.168.76.1/24 \
+    ipv6.method disabled bridge.stp no connection.autoconnect yes
+sudo nmcli con up br0
+```
+
+Choose a subnet that doesn't collide with your LAN or VPN routes. Guests get `192.168.76.10–254`. The connection is persistent across reboots. `br0` shows `NO-CARRIER` until the first VM attaches — that's normal.
+
+*b) True L2 bridge onto a wired NIC* — VMs appear on your LAN and get addresses from your router. Ethernet only:
+
+```sh
+sudo nmcli con add type bridge ifname br0 con-name br0 bridge.stp no
+sudo nmcli con add type bridge-slave ifname enp3s0 master br0
+sudo nmcli con up br0      # the host's IP moves from enp3s0 to br0
+```
+
+**3. Firewall.** With a default-deny firewall the guests' DHCP/DNS requests to the host and their routed traffic must be allowed. For ufw and setup (a):
+
+```sh
+sudo ufw allow in on br0 to any port 67 proto udp   # DHCP
+sudo ufw allow in on br0 to any port 53             # DNS
+sudo ufw route allow in on br0                      # guest → internet
+```
+
+**4. Verify** without any guest image — a diskless VM will PXE-boot and request a lease:
+
+```sh
+qemu-system-x86_64 -display none -boot n \
+    -netdev bridge,id=net0,br=br0 \
+    -device virtio-net-pci,netdev=net0,mac=52:54:00:00:00:01 &
+sleep 20; grep -i 52:54:00:00:00:01 /proc/net/arp; kill %1
+```
+
+To undo: `sudo nmcli con delete br0`, remove the `allow br0` line, and `sudo ufw status numbered` / `sudo ufw delete <n>` for the rules.
 
 ## Serial Console
 

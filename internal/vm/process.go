@@ -32,6 +32,16 @@ func (s VMStatus) String() string {
 	return "stopped"
 }
 
+// SLIRP (user networking) addressing. Each VM gets its own private SLIRP
+// network with a single NIC, so the built-in DHCP server always hands out
+// UserNetGuestIP. These are QEMU's defaults, passed explicitly so the address
+// shown in the UI is one we set rather than one we assume.
+const (
+	UserNetCIDR    = "10.0.2.0/24"
+	UserNetGuestIP = "10.0.2.15"
+	UserNetGateway = "10.0.2.2"
+)
+
 // BuildQEMUArgs constructs the QEMU binary name and argument slice for a VM.
 func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 	arch := cfg.Arch
@@ -89,7 +99,7 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 	// Networking
 	switch cfg.Network.Type {
 	case NetworkUser:
-		netdev := "user,id=net0"
+		netdev := fmt.Sprintf("user,id=net0,net=%s,dhcpstart=%s", UserNetCIDR, UserNetGuestIP)
 		for _, pf := range cfg.Network.PortForwards {
 			proto := pf.Proto
 			if proto == "" {
@@ -102,8 +112,10 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 			"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MAC),
 		)
 	case NetworkTap:
+		// The bridge backend creates the tap through the setuid qemu-bridge-helper,
+		// so no root is needed (plain "tap" would open /dev/net/tun itself).
 		args = append(args,
-			"-netdev", "tap,id=net0,br=br0",
+			"-netdev", "bridge,id=net0,br=br0",
 			"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MAC),
 		)
 	}
