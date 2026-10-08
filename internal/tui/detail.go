@@ -26,7 +26,7 @@ const (
 
 type consolePollMsg struct{}
 type consoleRefreshedMsg struct {
-	lines   []string
+	lines   []string // already passed through sanitizeConsoleLine
 	status  vm.ProcessInfo
 	guestIP string
 	usb     []vm.USBState
@@ -49,7 +49,6 @@ type VMDetailModel struct {
 	notice       string
 	width        int
 	height       int
-	ready        bool
 }
 
 // NewVMDetailModel constructs a VMDetailModel.
@@ -71,10 +70,29 @@ func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) V
 }
 
 func (m *VMDetailModel) setSize(w, h int) {
+	follow := m.vp.AtBottom()
 	m.width = w
 	m.height = h
 	m.vp.Width = w - 4
 	m.vp.Height = consoleHeight(h, m.cfg)
+	m.reloadConsole(follow)
+}
+
+// reloadConsole puts the console lines into the viewport, hard-wrapped to its
+// width so no line can spill past the box. With follow it jumps to the tail.
+func (m *VMDetailModel) reloadConsole(follow bool) {
+	content := "(no console output yet)"
+	if len(m.consoleLines) > 0 {
+		wrapped := make([]string, 0, len(m.consoleLines))
+		for _, l := range m.consoleLines {
+			wrapped = append(wrapped, wrapConsoleLine(l, m.vp.Width)...)
+		}
+		content = strings.Join(wrapped, "\n")
+	}
+	m.vp.SetContent(content)
+	if follow {
+		m.vp.GotoBottom()
+	}
 }
 
 // consoleHeight is the viewport height that fits the terminal: every USB device
@@ -106,15 +124,8 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 		m.guestIP = msg.guestIP
 		m.usb = msg.usb
 		m.consoleLines = msg.lines
-		content := "(no console output yet)"
-		if len(msg.lines) > 0 {
-			content = strings.Join(msg.lines, "\n")
-		}
-		m.vp.SetContent(content)
-		if !m.ready {
-			m.vp.GotoBottom()
-			m.ready = true
-		}
+		// Keep following the newest output unless the user has scrolled up.
+		m.reloadConsole(m.vp.AtBottom())
 		ourCmd = pollTickCmd()
 
 	case detailActionErrMsg:
@@ -397,6 +408,9 @@ func pollTickCmd() tea.Cmd {
 func refreshConsoleCmd(storagePath string, cfg *vm.VMConfig) tea.Cmd {
 	return func() tea.Msg {
 		lines, _ := vm.ReadConsoleTail(storagePath, cfg.Name, consoleTailLines)
+		for i, l := range lines {
+			lines[i] = sanitizeConsoleLine(l)
+		}
 		info, _ := vm.Status(storagePath, cfg.Name)
 		var ip string
 		if info.Status == vm.StatusRunning {
