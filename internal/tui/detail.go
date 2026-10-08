@@ -19,7 +19,7 @@ const (
 	consoleViewHeight  = 20
 	// detailChromeLines is everything on the screen besides the console
 	// viewport: header, info card (one USB line), labels, notice and help.
-	detailChromeLines = 21
+	detailChromeLines = 22
 )
 
 // --- messages ---
@@ -286,9 +286,9 @@ func (m VMDetailModel) View() string {
 	}
 
 	info := fmt.Sprintf(
-		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  IP:     %s\n  VNC:    %s\n  USB:    %s",
+		"  Name:     %s\n  Status:   %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  IP:       %s\n  VNC:      %s\n  USB:      %s",
 		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
-		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, ipInfo, vncInfo, m.usbInfo(),
+		ifEmpty(m.cfg.CDROMPath, "(none)"), m.cfg.FirmwareLabel(), netInfo, ipInfo, vncInfo, m.usbInfo(),
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n\n")
@@ -348,7 +348,7 @@ func (m VMDetailModel) usbInfo() string {
 		}
 		lines = append(lines, fmt.Sprintf("%-*s  %s  %s", usbNameWidth, truncate(s.Device.Label(), usbNameWidth), s.Device.ID(), state))
 	}
-	return strings.Join(lines, "\n          ")
+	return strings.Join(lines, "\n            ")
 }
 
 // vncViewer describes a known VNC viewer and how to build its arguments.

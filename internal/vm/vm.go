@@ -78,6 +78,14 @@ func ValidateMAC(s string) error {
 	return nil
 }
 
+// FirmwareType selects the guest firmware.
+type FirmwareType string
+
+const (
+	FirmwareBIOS FirmwareType = "bios" // SeaBIOS, QEMU's default
+	FirmwareUEFI FirmwareType = "uefi" // edk2/OVMF, booted from pflash
+)
+
 // NetworkConfig holds networking parameters for a VM.
 type NetworkConfig struct {
 	Type         NetworkType   `yaml:"type"`
@@ -93,10 +101,34 @@ type VMConfig struct {
 	DiskSize   int           `yaml:"disk_size"` // GiB
 	Arch       string        `yaml:"arch"`      // e.g. "x86_64", "aarch64"
 	CDROMPath  string        `yaml:"cdrom_path,omitempty"`
+	Firmware   FirmwareType  `yaml:"firmware,omitempty"`    // "bios" (default) or "uefi"
+	SecureBoot bool          `yaml:"secure_boot,omitempty"` // UEFI Secure Boot with Microsoft's keys enrolled; implies uefi
+	TPM        bool          `yaml:"tpm,omitempty"`         // emulated TPM 2.0 (swtpm)
 	Network    NetworkConfig `yaml:"network"`
 	VNCPort    int           `yaml:"vnc_port,omitempty"`    // VNC display number (TCP port = 5900+n); 0 = disabled
 	USBDevices []USBDevice   `yaml:"usb_devices,omitempty"` // host USB devices passed through to the guest
 	CreatedAt  time.Time     `yaml:"created_at"`
+}
+
+// UEFI reports whether the VM boots UEFI firmware. Secure Boot needs UEFI, so
+// it implies it even if firmware says otherwise.
+func (c *VMConfig) UEFI() bool {
+	return c.Firmware == FirmwareUEFI || c.SecureBoot
+}
+
+// FirmwareLabel describes the boot platform, e.g. "UEFI + Secure Boot, TPM 2.0".
+func (c *VMConfig) FirmwareLabel() string {
+	label := "BIOS"
+	switch {
+	case c.SecureBoot:
+		label = "UEFI + Secure Boot"
+	case c.UEFI():
+		label = "UEFI"
+	}
+	if c.TPM {
+		label += ", TPM 2.0"
+	}
+	return label
 }
 
 // --- Path helpers ---
@@ -134,6 +166,31 @@ func MonitorPath(storagePath, name string) string {
 // SerialSockPath returns the Unix socket path for the serial console.
 func SerialSockPath(storagePath, name string) string {
 	return filepath.Join(VMDir(storagePath, name), "serial.sock")
+}
+
+// FirmwareVarsPath returns the VM's private UEFI NVRAM store (pflash unit 1).
+func FirmwareVarsPath(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "efivars.fd")
+}
+
+// TPMDir returns the directory holding the emulated TPM's persistent state.
+func TPMDir(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "tpm")
+}
+
+// TPMSockPath returns the swtpm control socket QEMU connects to.
+func TPMSockPath(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "swtpm.sock")
+}
+
+// TPMPIDPath returns the PID file written by swtpm.
+func TPMPIDPath(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "swtpm.pid")
+}
+
+// TPMLogPath returns swtpm's log file.
+func TPMLogPath(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "swtpm.log")
 }
 
 // VNCSockPath returns the Unix socket path used for VNC (unused when VNCPort > 0).

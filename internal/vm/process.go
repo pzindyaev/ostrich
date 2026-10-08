@@ -43,11 +43,9 @@ const (
 )
 
 // BuildQEMUArgs constructs the QEMU binary name and argument slice for a VM.
-func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
-	arch := cfg.Arch
-	if arch == "" {
-		arch = "x86_64"
-	}
+// It fails when the VM wants UEFI firmware and none is installed.
+func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) {
+	arch := archOf(cfg)
 	bin := fmt.Sprintf("qemu-system-%s", arch)
 
 	diskPath := DiskPath(storagePath, cfg.Name)
@@ -56,9 +54,26 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 	monitorPath := MonitorPath(storagePath, cfg.Name)
 	pidPath := PIDPath(storagePath, cfg.Name)
 
-	machine := "q35"
-	if arch == "aarch64" || arch == "arm64" {
-		machine = "virt"
+	machine := machineOf(cfg)
+	machineOpts := machine
+
+	// UEFI: the firmware code and the VM's own NVRAM copy sit on two pflash
+	// units. Secure Boot builds keep the variable store behind SMM, so SMM
+	// must be on and flash writes restricted to it.
+	var firmwareArgs []string
+	if cfg.UEFI() {
+		fw, err := FindFirmware(arch, machine, cfg.SecureBoot)
+		if err != nil {
+			return "", nil, err
+		}
+		if fw.RequiresSMM {
+			machineOpts += ",smm=on"
+			firmwareArgs = append(firmwareArgs, "-global", "driver=cfi.pflash01,property=secure,value=on")
+		}
+		firmwareArgs = append(firmwareArgs,
+			"-drive", fmt.Sprintf("if=pflash,format=%s,unit=0,readonly=on,file=%s", fw.CodeFormat, fw.Code),
+			"-drive", fmt.Sprintf("if=pflash,format=%s,unit=1,file=%s", fw.VarsFormat, FirmwareVarsPath(storagePath, cfg.Name)),
+		)
 	}
 
 	// Serial console: Unix socket (for interactive access) + logfile (for passive log view).
@@ -72,23 +87,36 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 		"-name", cfg.Name,
 		"-m", fmt.Sprintf("%dM", cfg.RAM),
 		"-smp", strconv.Itoa(cfg.CPU),
-		"-machine", machine,
+		"-machine", machineOpts,
+	}
+	args = append(args, firmwareArgs...)
+	args = append(args,
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", diskPath),
 		"-chardev", serialChardev,
 		"-serial", "chardev:serial0",
 		"-monitor", fmt.Sprintf("unix:%s,server,nowait", monitorPath),
 		"-pidfile", pidPath,
 		"-display", "none",
-	}
+	)
 
 	// KVM acceleration when available
 	if _, err := os.Stat("/dev/kvm"); err == nil {
 		args = append(args, "-enable-kvm", "-cpu", "host")
 	}
 
-	// Boot media
+	// Boot media. The boot order only steers SeaBIOS; OVMF boots the disk
+	// once an OS is installed there and tries the CD before that.
 	if cfg.CDROMPath != "" {
 		args = append(args, "-cdrom", cfg.CDROMPath, "-boot", "order=dc")
+	}
+
+	// TPM 2.0, backed by the swtpm daemon started alongside QEMU.
+	if cfg.TPM {
+		args = append(args,
+			"-chardev", "socket,id=chrtpm,path="+TPMSockPath(storagePath, cfg.Name),
+			"-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
+			"-device", tpmDevice(machine)+",tpmdev=tpm0",
+		)
 	}
 
 	// VNC display (TCP, localhost-only)
@@ -129,7 +157,7 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 	}
 	// NetworkNone: no -netdev/-device args
 
-	return bin, args
+	return bin, args, nil
 }
 
 // Start launches QEMU for the VM. The process is detached so it survives TUI exit.
@@ -150,16 +178,29 @@ func Start(storagePath string, cfg *VMConfig) error {
 		return err
 	}
 
-	bin, args := BuildQEMUArgs(cfg, storagePath)
+	// A VM whose vm.yaml was switched to UEFI by hand has no NVRAM yet.
+	if err := EnsureFirmwareVars(storagePath, cfg); err != nil {
+		return err
+	}
+	bin, args, err := BuildQEMUArgs(cfg, storagePath)
+	if err != nil {
+		return err
+	}
 	if _, err := exec.LookPath(bin); err != nil {
 		return fmt.Errorf("%q not found in PATH — is QEMU installed?", bin)
 	}
 
+	if cfg.TPM {
+		if err := startTPM(storagePath, cfg.Name); err != nil {
+			return err
+		}
+	}
 	cmd := exec.Command(bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from terminal session
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
+		stopTPM(storagePath, cfg.Name)
 		return err
 	}
 	defer devNull.Close()
@@ -168,6 +209,7 @@ func Start(storagePath string, cfg *VMConfig) error {
 	cmd.Stderr = devNull
 
 	if err := cmd.Start(); err != nil {
+		stopTPM(storagePath, cfg.Name)
 		return fmt.Errorf("start QEMU: %w", err)
 	}
 
@@ -185,7 +227,9 @@ func Start(storagePath string, cfg *VMConfig) error {
 }
 
 // Stop sends SIGTERM to the VM process and waits up to 5 s before SIGKILL.
+// The TPM emulator, if any, goes with it.
 func Stop(storagePath, name string) error {
+	defer stopTPM(storagePath, name)
 	info, err := Status(storagePath, name)
 	if err != nil || info.Status == StatusStopped {
 		return nil

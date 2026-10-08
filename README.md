@@ -22,6 +22,7 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 - **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
+- **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
 - **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
 - **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
 - **YAML config per VM** — human-readable, hand-editable `vm.yaml` in each VM folder
@@ -34,21 +35,24 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 | `qemu-system-*` | Running virtual machines |
 | `qemu-img` | Creating qcow2 disk images |
 | Go 1.21+ | Building from source |
+| OVMF / edk2 (optional) | UEFI firmware for `firmware: uefi` VMs |
+| `swtpm` (optional) | Emulated TPM 2.0 for `tpm: true` VMs |
+| `virt-fw-vars` (optional) | Enrolls Secure Boot keys where the OVMF package ships none (Arch, Homebrew); from the `virt-firmware` package |
 
 Install QEMU on common distros:
 
 ```bash
 # Debian / Ubuntu
-sudo apt install qemu-system-x86 qemu-utils
+sudo apt install qemu-system-x86 qemu-utils ovmf swtpm
 
 # Fedora / RHEL
-sudo dnf install qemu-system-x86 qemu-img
+sudo dnf install qemu-system-x86 qemu-img edk2-ovmf swtpm
 
 # Arch
-sudo pacman -S qemu-full
+sudo pacman -S qemu-full edk2-ovmf swtpm virt-firmware
 
-# macOS (Homebrew)
-brew install qemu
+# macOS (Homebrew) — QEMU bundles the edk2 images
+brew install qemu swtpm && pip install virt-firmware
 ```
 
 ## Installation
@@ -131,7 +135,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 
 ### Create VM form
 
-A linear 7-step wizard. Text input fields accept free typing; the network selector uses `h/l` or arrow keys.
+A linear 10-step wizard. Text input fields accept free typing; the selectors (firmware, TPM, network) use `h/l` or arrow keys.
 
 | Step | Field | Notes |
 |------|-------|-------|
@@ -140,15 +144,17 @@ A linear 7-step wizard. Text input fields accept free typing; the network select
 | 3 | RAM (MiB) | Minimum 64, e.g. `2048` for 2 GiB |
 | 4 | Disk Size (GiB) | Minimum 1, e.g. `20` |
 | 5 | Boot ISO | Full path to an `.iso` file, or leave blank |
-| 6 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
-| 7 | VNC Display Number | `0` to disable; `1`–`99` enables VNC on TCP port `5900+N` |
-| 8 | Confirm | Review and submit |
+| 6 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot` — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20) |
+| 7 | TPM 2.0 | `disabled` · `enabled` (needs `swtpm`) |
+| 8 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
+| 9 | VNC Display Number | `0` to disable; `1`–`99` enables VNC on TCP port `5900+N` |
+| 10 | Confirm | Review and submit |
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `Enter` / `j` / `↓` | Next field |
 | `Shift-Tab` / `k` / `↑` | Previous field |
-| `h` / `l` / `←` / `→` | Cycle network type (step 6 only) |
+| `h` / `l` / `←` / `→` | Cycle a selector (steps 6–8) |
 | `Esc` | Cancel and return to VM list |
 
 ### Edit VM form
@@ -161,6 +167,8 @@ Press `e` on the list or detail screen to edit an existing VM. All properties ar
 | CPU Cores / RAM (MiB) | Same rules as the create form |
 | Disk Size (GiB) | Can only grow (`qemu-img resize`); VM must be stopped. The guest still has to extend its own partitions/filesystem |
 | Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation) |
+| Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot`; VM must be stopped. Turning Secure Boot on rebuilds the VM's UEFI NVRAM |
+| TPM 2.0 | `disabled` · `enabled`; needs `swtpm` on the host |
 | Network | `user (NAT)` · `tap (bridge)` · `none` |
 | MAC Address | Leave blank to generate a new random one |
 | Port Forwards | `user` mode only. Comma-separated `[tcp\|udp:]host:guest`, e.g. `2222:22, udp:5353:53` |
@@ -172,7 +180,7 @@ Changes to a running VM are saved but only take effect the next time it is start
 |-----|--------|
 | `Tab` / `Enter` / `↓` | Next field |
 | `Shift-Tab` / `↑` | Previous field |
-| `h` / `l` / `←` / `→` | Cycle network type |
+| `h` / `l` / `←` / `→` | Cycle a selector (firmware, TPM, network) |
 | `Ctrl-s` (or `Enter` on **Save**) | Save changes |
 | `Esc` | Cancel and return to VM detail |
 
@@ -213,6 +221,9 @@ Every toggle is written to `vm.yaml` immediately. If the VM is running the devic
 ├── debian-12/
 │   ├── vm.yaml                 ← VM configuration (human-editable)
 │   ├── disk.qcow2              ← QEMU qcow2 disk image
+│   ├── efivars.fd              ← UEFI NVRAM: boot entries, Secure Boot keys (UEFI VMs only)
+│   ├── tpm/                    ← emulated TPM state (TPM VMs only)
+│   ├── swtpm.sock, swtpm.pid, swtpm.log   ← TPM emulator (while running)
 │   ├── console.log             ← serial console log (written while running)
 │   ├── serial.sock             ← serial console Unix socket (interactive, while running)
 │   ├── qemu.pid                ← PID of the running QEMU process
@@ -237,6 +248,9 @@ ram: 2048        # MiB
 disk_size: 20    # GiB (informational; actual size lives in disk.qcow2)
 arch: x86_64
 cdrom_path: /home/user/iso/debian-12.iso   # omit after install
+firmware: uefi      # bios (default) | uefi — see UEFI, Secure Boot and TPM 2.0
+secure_boot: true   # enforce Secure Boot with Microsoft's keys; implies uefi
+tpm: true           # emulated TPM 2.0 (swtpm)
 network:
   type: user     # user | tap | none
   mac: 52:54:00:ab:cd:ef
@@ -322,6 +336,52 @@ sleep 20; grep -i 52:54:00:00:00:01 /proc/net/arp; kill %1
 ```
 
 To undo: `sudo nmcli con delete br0`, remove the `allow br0` line, and `sudo ufw status numbered` / `sudo ufw delete <n>` for the rules.
+
+## UEFI, Secure Boot and TPM 2.0
+
+A VM boots SeaBIOS unless `firmware: uefi` is set. A UEFI VM gets the host's OVMF (edk2) firmware on two flash devices: the read-only code image, shared by every VM, and `efivars.fd`, the VM's private NVRAM holding its boot entries and Secure Boot keys. The NVRAM is copied from the firmware's template when the VM is created (or on first start, for a hand-edited `vm.yaml`).
+
+| Setting | Effect |
+|---|---|
+| `firmware: uefi` | OVMF on pflash instead of SeaBIOS. The firmware boots the disk once an OS is on it and tries the ISO before that |
+| `secure_boot: true` | The Secure Boot build of OVMF (`-machine q35,smm=on`), with a generated platform key and Microsoft's KEK and db certificates (2011 and 2023 generations) enrolled in the NVRAM. Windows and shim-signed Linux boot; unsigned loaders are refused with *Access Denied*. Implies `firmware: uefi` |
+| `tpm: true` | An emulated TPM 2.0: `swtpm` is started next to QEMU with its state in `tpm/`, and the guest sees a `tpm-tis` device. The state persists across restarts, so BitLocker and the like keep working |
+
+QEMU is started with:
+
+```
+-machine q35,smm=on
+-global driver=cfi.pflash01,property=secure,value=on
+-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd
+-drive if=pflash,format=raw,unit=1,file=~/VMs/windows-11/efivars.fd
+-chardev socket,id=chrtpm,path=~/VMs/windows-11/swtpm.sock
+-tpmdev emulator,id=tpm0,chardev=chrtpm
+-device tpm-tis,tpmdev=tpm0
+```
+
+and `swtpm` as `swtpm socket --tpm2 --tpmstate dir=~/VMs/windows-11/tpm --ctrl type=unixio,path=~/VMs/windows-11/swtpm.sock --terminate --daemon`. It exits by itself when QEMU disconnects.
+
+### Finding the firmware
+
+Ostrich reads QEMU's firmware descriptors the way libvirt does — `/usr/share/qemu/firmware/*.json`, overridable per file from `/etc/qemu/firmware` and `~/.config/qemu/firmware` — and picks the first UEFI image for the VM's architecture and machine type. For plain UEFI it prefers an image without Secure Boot (no SMM needed); for Secure Boot it needs one with the `secure-boot` feature and prefers a template whose keys are already enrolled. Hosts without descriptors fall back to the usual package paths (Fedora, Debian/Ubuntu, Arch, the images bundled with QEMU and Homebrew). If nothing is found, creating or starting the VM fails with the package to install.
+
+### Secure Boot keys
+
+Secure Boot only enforces anything once a platform key and the signing certificates are enrolled. Fedora and Debian/Ubuntu ship a vars template with Microsoft's keys already in it (`OVMF_VARS.secboot.fd`, `OVMF_VARS_4M.ms.fd`), which is copied as is. Arch's `edk2-ovmf` and the images bundled with QEMU do not, so Ostrich runs `virt-fw-vars` from the [virt-firmware](https://gitlab.com/kraxel/virt-firmware) package when the VM is created:
+
+```sh
+virt-fw-vars --input /usr/share/edk2/x64/OVMF_VARS.4m.fd --output efivars.fd \
+    --enroll-generate ostrich --microsoft-kek all --microsoft-db all --secure-boot
+```
+
+The platform key is generated for the VM and thrown away; the db gets *Microsoft Windows Production PCA 2011*, *Windows UEFI CA 2023*, *Microsoft Corporation UEFI CA 2011*, *Microsoft UEFI CA 2023* and the option ROM CA. Without `virt-fw-vars` the VM is not created — pick `UEFI` instead, or install the package. Turning Secure Boot on for an existing VM rebuilds `efivars.fd` with the keys; the firmware re-creates the boot entries (Windows and Linux both leave a fallback loader at `\EFI\BOOT\BOOTX64.EFI`). Turning it off keeps the file.
+
+### Installing Windows 11
+
+1. Create the VM with at least 2 cores, 4096 MiB and 64 GiB, the Windows ISO as boot ISO, firmware `UEFI + Secure Boot`, TPM `enabled` and a VNC display. Windows 10 is happy with plain `BIOS`.
+2. Start it and press `v`. The ISO asks to *Press any key to boot from CD or DVD* — do so within a few seconds, or OVMF drops into its boot menu (pick the DVD-ROM there, or stop and start the VM).
+3. Windows setup has no drivers for the virtio disk and network card, so its disk list is empty. Get the [virtio-win driver ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso), copy its contents to a USB stick, pass the stick through with `u`, and choose *Load driver* → `viostor\w11\amd64` in setup. Install `NetKVM\w11\amd64` the same way from Device Manager after the first boot.
+4. Once installed, clear the Boot ISO in the edit form.
 
 ## Serial Console
 

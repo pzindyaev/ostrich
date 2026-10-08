@@ -20,7 +20,9 @@ const (
 	editRAM
 	editDisk
 	editISO
-	editNetwork // selector (no text input)
+	editFirmware // selector
+	editTPM      // selector
+	editNetwork  // selector (no text input)
 	editMAC
 	editForwards
 	editVNC
@@ -34,6 +36,8 @@ var editLabels = [editFieldCount]string{
 	"RAM (MiB)",
 	"Disk Size (GiB)",
 	"Boot ISO",
+	"Firmware",
+	"TPM 2.0",
 	"Network",
 	"MAC Address",
 	"Port Forwards",
@@ -47,6 +51,8 @@ var editHelp = [editFieldCount]string{
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Can only grow, and the VM must be stopped. The guest must extend its own partitions",
 	"Full path to an ISO image to boot from, or leave blank to boot from disk",
+	"h/l/←/→ to select. VM must be stopped; turning Secure Boot on rebuilds the UEFI NVRAM (boot entries)",
+	"h/l/←/→ to select. Emulated TPM 2.0 via swtpm — required by Windows 11",
 	"h/l/←/→ to select: user (NAT) · tap (bridge) · none",
 	"Leave blank to generate a new random address",
 	"user networking only. Comma-separated [tcp|udp:]host:guest, e.g. 2222:22, udp:5353:53",
@@ -54,9 +60,14 @@ var editHelp = [editFieldCount]string{
 	"Press Enter to save changes",
 }
 
+// selector reports whether the field is a horizontal choice.
+func (f editField) selector() bool {
+	return f == editFirmware || f == editTPM || f == editNetwork
+}
+
 // isText reports whether the field is backed by a text input.
 func (f editField) isText() bool {
-	return f != editNetwork && f != editSave
+	return !f.selector() && f != editSave
 }
 
 type vmUpdatedMsg struct{ name string }
@@ -67,6 +78,8 @@ type EditVMModel struct {
 	orig    *vm.VMConfig
 	field   editField
 	inputs  [editFieldCount]textinput.Model // entries for non-text fields are unused
+	fwIdx   int
+	tpmIdx  int
 	netIdx  int
 	running bool
 	err     string
@@ -111,6 +124,8 @@ func NewEditVMModel(mgr *vm.Manager, cfg *vm.VMConfig, width, height int) EditVM
 	return EditVMModel{
 		orig:    cfg,
 		inputs:  inputs,
+		fwIdx:   firmwareIndex(cfg),
+		tpmIdx:  boolIndex(cfg.TPM),
 		netIdx:  netIdx,
 		running: info.Status == vm.StatusRunning,
 		mgr:     mgr,
@@ -182,14 +197,10 @@ func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
 		}
 
 	case "h", "left":
-		if m.field == editNetwork {
-			m.netIdx = (m.netIdx - 1 + len(networkChoices)) % len(networkChoices)
-		}
+		m.cycle(-1)
 
 	case "l", "right":
-		if m.field == editNetwork {
-			m.netIdx = (m.netIdx + 1) % len(networkChoices)
-		}
+		m.cycle(1)
 	}
 
 	// Forward keystrokes to active text input.
@@ -199,6 +210,30 @@ func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// cycle moves the current field's selector by delta, if it has one.
+func (m *EditVMModel) cycle(delta int) {
+	switch m.field {
+	case editFirmware:
+		m.fwIdx = wrap(m.fwIdx+delta, len(firmwareChoices))
+	case editTPM:
+		m.tpmIdx = wrap(m.tpmIdx+delta, len(tpmLabels))
+	case editNetwork:
+		m.netIdx = wrap(m.netIdx+delta, len(networkChoices))
+	}
+}
+
+// choices returns a selector field's labels and current index.
+func (m EditVMModel) choices(f editField) ([]string, int) {
+	switch f {
+	case editFirmware:
+		return firmwareLabels(), m.fwIdx
+	case editTPM:
+		return tpmLabels, m.tpmIdx
+	default:
+		return networkLabels, m.netIdx
+	}
 }
 
 func (m EditVMModel) moveTo(f editField) (EditVMModel, tea.Cmd) {
@@ -257,6 +292,13 @@ func (m EditVMModel) buildConfig() (*vm.VMConfig, editField, error) {
 		}
 	}
 
+	fw := firmwareChoices[m.fwIdx]
+	cfg.Firmware, cfg.SecureBoot = fw.firmware, fw.secureBoot
+	if m.running && (cfg.UEFI() != m.orig.UEFI() || cfg.SecureBoot != m.orig.SecureBoot) {
+		return nil, editFirmware, fmt.Errorf("stop the VM before changing its firmware")
+	}
+	cfg.TPM = m.tpmIdx == 1
+
 	cfg.Network.Type = networkChoices[m.netIdx]
 	cfg.Network.MAC = m.value(editMAC)
 	if cfg.Network.MAC != "" {
@@ -305,7 +347,7 @@ func (m EditVMModel) View() string {
 
 	if m.running {
 		b.WriteString(styleRunning.Render("  ● running"))
-		b.WriteString(styleHelp.Render(" — changes take effect on next start; name and disk size are locked"))
+		b.WriteString(styleHelp.Render(" — changes take effect on next start; name, disk size and firmware are locked"))
 		b.WriteString("\n\n")
 	}
 
@@ -331,16 +373,8 @@ func (m EditVMModel) View() string {
 		}
 		b.WriteString(marker + label + " ")
 
-		if f == editNetwork {
-			var opts []string
-			for i, lbl := range networkLabels {
-				if i == m.netIdx {
-					opts = append(opts, styleSelected.Render(" "+lbl+" "))
-				} else {
-					opts = append(opts, styleNormal.Render(" "+lbl+" "))
-				}
-			}
-			b.WriteString(strings.Join(opts, " "))
+		if f.selector() {
+			b.WriteString(renderChoices(m.choices(f)))
 		} else {
 			b.WriteString(m.inputs[f].View())
 		}
@@ -357,7 +391,7 @@ func (m EditVMModel) View() string {
 	}
 
 	keyHelp := "Tab/↓: next   Shift+Tab/↑: back   Ctrl-s: save   Esc: cancel"
-	if m.field == editNetwork {
+	if m.field.selector() {
 		keyHelp = "h/l/←/→: select   j/↓: next   k/↑: back   Ctrl-s: save   Esc: cancel"
 	} else if m.field == editSave {
 		keyHelp = "Enter: save   k/Shift+Tab: back   Esc: cancel"

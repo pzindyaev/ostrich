@@ -67,7 +67,7 @@ func TestUSBDeviceIDsAndSpec(t *testing.T) {
 func TestBuildQEMUArgsUSB(t *testing.T) {
 	cfg := &VMConfig{Name: "t", CPU: 1, RAM: 128, Network: NetworkConfig{Type: NetworkNone},
 		USBDevices: []USBDevice{{VendorID: "046d", ProductID: "085c"}}}
-	_, args := BuildQEMUArgs(cfg, t.TempDir())
+	_, args, _ := BuildQEMUArgs(cfg, t.TempDir())
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-device qemu-xhci,id=xhci") {
 		t.Errorf("missing xhci controller: %s", joined)
@@ -76,7 +76,7 @@ func TestBuildQEMUArgsUSB(t *testing.T) {
 		t.Errorf("missing usb-host device: %s", joined)
 	}
 	// The controller is there even with no devices, so hot-plug always works.
-	_, args = BuildQEMUArgs(&VMConfig{Name: "t", CPU: 1, RAM: 128}, t.TempDir())
+	_, args, _ = BuildQEMUArgs(&VMConfig{Name: "t", CPU: 1, RAM: 128}, t.TempDir())
 	if !strings.Contains(strings.Join(args, " "), "qemu-xhci") {
 		t.Error("xhci controller should be unconditional")
 	}

@@ -14,14 +14,16 @@ import (
 type createStep int
 
 const (
-	stepName    createStep = iota // text input 0
-	stepCPU                       // text input 1
-	stepRAM                       // text input 2
-	stepDisk                      // text input 3
-	stepISO                       // text input 4
-	stepNetwork                   // selector (no text input)
-	stepVNC                       // text input 5
-	stepConfirm                   // confirmation
+	stepName     createStep = iota // text input 0
+	stepCPU                        // text input 1
+	stepRAM                        // text input 2
+	stepDisk                       // text input 3
+	stepISO                        // text input 4
+	stepFirmware                   // selector
+	stepTPM                        // selector
+	stepNetwork                    // selector (no text input)
+	stepVNC                        // text input 5
+	stepConfirm                    // confirmation
 	stepCount
 )
 
@@ -31,6 +33,8 @@ var stepLabels = []string{
 	"RAM (MiB)",
 	"Disk Size (GiB)",
 	"Boot ISO path (optional — leave blank to skip)",
+	"Firmware",
+	"TPM 2.0",
 	"Network type",
 	"VNC Display Number (0 = disabled)",
 	"Confirm",
@@ -42,6 +46,8 @@ var stepHelp = []string{
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Disk size in GiB, e.g. 20",
 	"Full path to an ISO image for initial install, or leave blank",
+	"h/l/←/→ to select. Windows 11 needs UEFI + Secure Boot and a TPM (next step); Linux boots with any",
+	"h/l/←/→ to select. Emulated by swtpm on the host — required by Windows 11",
 	"h/l/←/→ to select: user (NAT) · tap (bridge) · none",
 	"Display number 1–99 (TCP port = 5900+n). 0 to disable. Connect with vncviewer 127.0.0.1:<n>",
 	"Press Enter to create the VM",
@@ -49,6 +55,69 @@ var stepHelp = []string{
 
 var networkChoices = []vm.NetworkType{vm.NetworkUser, vm.NetworkTap, vm.NetworkNone}
 var networkLabels = []string{"user (NAT)", "tap (bridge)", "none"}
+
+// firmwareChoices pairs the firmware selector's labels with what they set.
+var firmwareChoices = []struct {
+	label      string
+	firmware   vm.FirmwareType
+	secureBoot bool
+}{
+	{"BIOS", vm.FirmwareBIOS, false},
+	{"UEFI", vm.FirmwareUEFI, false},
+	{"UEFI + Secure Boot", vm.FirmwareUEFI, true},
+}
+var tpmLabels = []string{"disabled", "enabled"}
+
+// firmwareLabels lists the firmware selector's entries in order.
+func firmwareLabels() []string {
+	labels := make([]string, len(firmwareChoices))
+	for i, c := range firmwareChoices {
+		labels[i] = c.label
+	}
+	return labels
+}
+
+// firmwareIndex returns the firmwareChoices entry matching a config.
+func firmwareIndex(cfg *vm.VMConfig) int {
+	switch {
+	case cfg.SecureBoot:
+		return 2
+	case cfg.UEFI():
+		return 1
+	}
+	return 0
+}
+
+// boolIndex maps a toggle to its two-entry selector index.
+func boolIndex(on bool) int {
+	if on {
+		return 1
+	}
+	return 0
+}
+
+// wrap keeps a selector index within [0, n).
+func wrap(i, n int) int {
+	return ((i % n) + n) % n
+}
+
+// renderChoices draws a horizontal selector with the chosen entry highlighted.
+func renderChoices(labels []string, selected int) string {
+	var opts []string
+	for i, lbl := range labels {
+		if i == selected {
+			opts = append(opts, styleSelected.Render(" "+lbl+" "))
+		} else {
+			opts = append(opts, styleNormal.Render(" "+lbl+" "))
+		}
+	}
+	return strings.Join(opts, " ")
+}
+
+// selector reports whether the step is a horizontal choice rather than text.
+func (s createStep) selector() bool {
+	return s == stepFirmware || s == stepTPM || s == stepNetwork
+}
 
 // inputForStep maps a step to its index in the inputs array, or -1 for non-text steps.
 func inputForStep(s createStep) int {
@@ -78,6 +147,8 @@ type vmCreateErrMsg struct{ err error }
 type CreateVMModel struct {
 	step   createStep
 	inputs [6]textinput.Model // name, cpu, ram, disk, iso, vnc
+	fwIdx  int
+	tpmIdx int
 	netIdx int
 	err    string
 	mgr    *vm.Manager
@@ -161,14 +232,10 @@ func (m CreateVMModel) handleKey(msg tea.KeyMsg) (CreateVMModel, tea.Cmd) {
 		}
 
 	case "h", "left":
-		if m.step == stepNetwork {
-			m.netIdx = (m.netIdx - 1 + len(networkChoices)) % len(networkChoices)
-		}
+		m.cycle(-1)
 
 	case "l", "right":
-		if m.step == stepNetwork {
-			m.netIdx = (m.netIdx + 1) % len(networkChoices)
-		}
+		m.cycle(1)
 	}
 
 	// Forward keystrokes to active text input.
@@ -178,6 +245,18 @@ func (m CreateVMModel) handleKey(msg tea.KeyMsg) (CreateVMModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// cycle moves the current step's selector by delta, if it has one.
+func (m *CreateVMModel) cycle(delta int) {
+	switch m.step {
+	case stepFirmware:
+		m.fwIdx = wrap(m.fwIdx+delta, len(firmwareChoices))
+	case stepTPM:
+		m.tpmIdx = wrap(m.tpmIdx+delta, len(tpmLabels))
+	case stepNetwork:
+		m.netIdx = wrap(m.netIdx+delta, len(networkChoices))
+	}
 }
 
 func (m CreateVMModel) advance() (CreateVMModel, tea.Cmd) {
@@ -273,15 +352,19 @@ func (m CreateVMModel) buildConfig() (*vm.VMConfig, error) {
 	iso := strings.TrimSpace(m.inputs[inputForStep(stepISO)].Value())
 	vnc, _ := strconv.Atoi(strings.TrimSpace(m.inputs[inputForStep(stepVNC)].Value()))
 	netType := networkChoices[m.netIdx]
+	fw := firmwareChoices[m.fwIdx]
 
 	return &vm.VMConfig{
-		Name:      name,
-		CPU:       cpu,
-		RAM:       ram,
-		DiskSize:  disk,
-		CDROMPath: iso,
-		VNCPort:   vnc,
-		Network:   vm.NetworkConfig{Type: netType},
+		Name:       name,
+		CPU:        cpu,
+		RAM:        ram,
+		DiskSize:   disk,
+		CDROMPath:  iso,
+		Firmware:   fw.firmware,
+		SecureBoot: fw.secureBoot,
+		TPM:        m.tpmIdx == 1,
+		VNCPort:    vnc,
+		Network:    vm.NetworkConfig{Type: netType},
 	}, nil
 }
 
@@ -323,18 +406,14 @@ func (m CreateVMModel) View() string {
 	b.WriteString("\n\n")
 
 	switch m.step {
+	case stepFirmware:
+		b.WriteString("  " + renderChoices(firmwareLabels(), m.fwIdx) + "\n\n")
+
+	case stepTPM:
+		b.WriteString("  " + renderChoices(tpmLabels, m.tpmIdx) + "\n\n")
+
 	case stepNetwork:
-		var opts []string
-		for i, lbl := range networkLabels {
-			if i == m.netIdx {
-				opts = append(opts, styleSelected.Render(" "+lbl+" "))
-			} else {
-				opts = append(opts, styleNormal.Render(" "+lbl+" "))
-			}
-		}
-		b.WriteString("  ")
-		b.WriteString(strings.Join(opts, "  "))
-		b.WriteString("\n\n")
+		b.WriteString("  " + renderChoices(networkLabels, m.netIdx) + "\n\n")
 
 	case stepConfirm:
 		cfg, err := m.buildConfig()
@@ -344,9 +423,10 @@ func (m CreateVMModel) View() string {
 				vncStr = fmt.Sprintf("display %d (port %d)", cfg.VNCPort, 5900+cfg.VNCPort)
 			}
 			summary := fmt.Sprintf(
-				"  Name: %s\n  CPU:  %d cores\n  RAM:  %d MiB\n  Disk: %d GiB\n  ISO:  %s\n  Net:  %s\n  VNC:  %s",
+				"  Name:     %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  VNC:      %s",
 				cfg.Name, cfg.CPU, cfg.RAM, cfg.DiskSize,
 				ifEmpty(cfg.CDROMPath, "(none)"),
+				cfg.FirmwareLabel(),
 				cfg.Network.Type,
 				vncStr,
 			)
@@ -368,7 +448,7 @@ func (m CreateVMModel) View() string {
 	}
 
 	keyHelp := "Tab/j/↓: next   Shift+Tab/k/↑: back   Esc: cancel"
-	if m.step == stepNetwork {
+	if m.step.selector() {
 		keyHelp = "h/l/←/→: select   j/↓: next   k/↑: back   Esc: cancel"
 	} else if m.step == stepConfirm {
 		keyHelp = "Enter/j: create VM   k/Shift+Tab: back   Esc: cancel"

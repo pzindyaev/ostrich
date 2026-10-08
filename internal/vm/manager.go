@@ -64,6 +64,19 @@ func (m *Manager) Create(cfg *VMConfig) error {
 	if cfg.Network.Type == "" {
 		cfg.Network.Type = NetworkUser
 	}
+	if cfg.Firmware == "" {
+		cfg.Firmware = FirmwareBIOS
+	}
+
+	// Firmware and TPM need host packages; find out now rather than at start.
+	if err := EnsureFirmwareVars(m.StoragePath, cfg); err != nil {
+		return err
+	}
+	if cfg.TPM {
+		if err := CheckTPM(); err != nil {
+			return err
+		}
+	}
 
 	diskPath := DiskPath(m.StoragePath, cfg.Name)
 	diskSizeStr := fmt.Sprintf("%dG", cfg.DiskSize)
@@ -79,9 +92,10 @@ func (m *Manager) Create(cfg *VMConfig) error {
 }
 
 // Update applies an edited config to the existing VM named oldName. It grows
-// the disk image and renames the VM directory as needed, then rewrites vm.yaml.
-// Renaming and disk resizing require the VM to be stopped; other changes to a
-// running VM take effect the next time it is started.
+// the disk image, renames the VM directory and sets up UEFI NVRAM as needed,
+// then rewrites vm.yaml. Renaming, disk resizing and firmware changes require
+// the VM to be stopped; other changes to a running VM take effect the next
+// time it is started.
 func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 	old, err := LoadConfig(m.StoragePath, oldName)
 	if err != nil {
@@ -90,6 +104,7 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 
 	renamed := cfg.Name != oldName
 	resized := cfg.DiskSize != old.DiskSize
+	firmwareChanged := cfg.UEFI() != old.UEFI() || cfg.SecureBoot != old.SecureBoot
 
 	if cfg.DiskSize < old.DiskSize {
 		return fmt.Errorf("disk can only grow (currently %d GiB) — shrinking would destroy data", old.DiskSize)
@@ -97,13 +112,21 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 	if renamed && m.Exists(cfg.Name) {
 		return fmt.Errorf("a VM named %q already exists", cfg.Name)
 	}
-	if renamed || resized {
+	if renamed || resized || firmwareChanged {
 		if info, err := Status(m.StoragePath, oldName); err == nil && info.Status == StatusRunning {
-			return fmt.Errorf("stop the VM before changing its name or disk size")
+			return fmt.Errorf("stop the VM before changing its name, disk size or firmware")
 		}
 	}
 	if cfg.Network.MAC == "" {
 		cfg.Network.MAC = randomMAC()
+	}
+	if cfg.Firmware == "" {
+		cfg.Firmware = FirmwareBIOS
+	}
+	if cfg.TPM && !old.TPM {
+		if err := CheckTPM(); err != nil {
+			return err
+		}
 	}
 
 	if resized {
@@ -121,6 +144,18 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 			_ = SaveConfig(m.StoragePath, old)
 			return fmt.Errorf("rename VM directory: %w", err)
 		}
+	}
+
+	// Turning Secure Boot on needs a store with the keys enrolled, so the
+	// NVRAM is rebuilt (boot entries are re-created by the firmware). Turning
+	// it off or switching to BIOS keeps the store so the VM can switch back.
+	if cfg.SecureBoot && !old.SecureBoot {
+		if err := os.Remove(FirmwareVarsPath(m.StoragePath, cfg.Name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("reset NVRAM: %w", err)
+		}
+	}
+	if err := EnsureFirmwareVars(m.StoragePath, cfg); err != nil {
+		return err
 	}
 
 	if err := SaveConfig(m.StoragePath, cfg); err != nil {
