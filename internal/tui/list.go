@@ -11,7 +11,7 @@ import (
 // --- messages ---
 
 type vmListLoadedMsg struct {
-	cfgs   []*vm.VMConfig
+	cfgs     []*vm.VMConfig
 	statuses map[string]vm.VMStatus
 }
 
@@ -74,10 +74,10 @@ type VMListModel struct {
 	err      string
 	status   string // transient status message
 	// delete confirmation
-	confirming bool
+	confirming  bool
 	confirmName string
-	width  int
-	height int
+	width       int
+	height      int
 }
 
 // NewVMListModel creates a VMListModel; VMs are loaded lazily via Init.
@@ -162,6 +162,11 @@ func (m VMListModel) handleKey(msg tea.KeyMsg) (VMListModel, tea.Cmd) {
 		if len(m.cfgs) > 0 {
 			name := m.cfgs[m.cursor].Name
 			return m, func() tea.Msg { return NavigateMsg{To: screenEdit, VMName: name} }
+		}
+	case "u":
+		if len(m.cfgs) > 0 {
+			name := m.cfgs[m.cursor].Name
+			return m, func() tea.Msg { return NavigateMsg{To: screenUSB, VMName: name} }
 		}
 	case "s":
 		if len(m.cfgs) > 0 {
@@ -268,6 +273,7 @@ func (m VMListModel) View() string {
 		"l/enter: open",
 		"n: new",
 		"e: edit",
+		"u: USB",
 		"s: start",
 		"x: stop",
 		"d: delete",

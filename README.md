@@ -21,6 +21,7 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 - **Live console view** — serial console output streamed in the detail screen, auto-refreshed every 2 seconds
 - **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
+- **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
 - **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
 - **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
 - **YAML config per VM** — human-readable, hand-editable `vm.yaml` in each VM folder
@@ -100,6 +101,7 @@ The main screen lists all VMs with their running status and resource summary.
 | `l` / `Enter` | Open VM detail |
 | `n` | Create new VM |
 | `e` | Edit selected VM |
+| `u` | USB passthrough for selected VM |
 | `s` | Start selected VM |
 | `x` | Stop selected VM |
 | `d` | Delete selected VM (asks confirmation) |
@@ -115,6 +117,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 | `s` | Start VM (when stopped) |
 | `x` | Stop VM (when running) |
 | `e` | Edit VM properties |
+| `u` | **USB passthrough** — pick host devices for this VM |
 | `c` | **Connect to serial console interactively** (requires `socat`) |
 | `v` | **Launch VNC viewer** for this VM (requires VNC enabled and a VNC viewer installed) |
 | `j` / `↓` | Scroll console down |
@@ -173,6 +176,36 @@ Changes to a running VM are saved but only take effect the next time it is start
 | `Ctrl-s` (or `Enter` on **Save**) | Save changes |
 | `Esc` | Cancel and return to VM detail |
 
+### USB passthrough screen
+
+Press `u` on the list or detail screen. It lists the USB devices connected to the host (hubs are left out — they stay with the host kernel) and marks the ones passed through to this VM. Devices that are configured but currently unplugged are listed at the bottom as *not connected*.
+
+```
+  Ostrich — USB Passthrough: debian-12
+
+  ● running — attaching or detaching hot-plugs the device in the guest
+
+  Host USB devices   [x] = passed through to this VM
+
+  ▸ [x] 046d:085c  C922 Pro Stream Webcam                port 3-2.2.2
+    [ ] 2972:0077  FiiO K11                              port 3-2.2.1
+    [ ] 046d:c52b  Logitech USB Receiver                 port 3-2.2.3   ✗ no access
+    [x] 0781:5583  SanDisk Ultra Fit                     not connected
+
+  Space/Enter: attach/detach   a: add by ID   r: rescan   j/k: move   q/Esc: back
+```
+
+| Key | Action |
+|-----|--------|
+| `Space` / `Enter` | Attach or detach the device under the cursor |
+| `a` | Add a device by `vendor:product` ID (as printed by `lsusb`), e.g. one that is not plugged in yet |
+| `y` | Copy the udev command that grants access to the device under the cursor (shown when it is marked **✗ no access**) |
+| `r` | Rescan host devices |
+| `j` / `k`, `g` / `G` | Move cursor |
+| `q` / `h` / `Esc` | Back to VM detail |
+
+Every toggle is written to `vm.yaml` immediately. If the VM is running the device is hot-plugged (or unplugged) through the QEMU monitor on the spot; otherwise it is attached the next time the VM starts. See [USB Passthrough](#usb-passthrough) for the host-side permissions this needs.
+
 ## VM Storage Layout
 
 ```
@@ -215,6 +248,13 @@ network:
       guest: 80
       proto: tcp
 vnc_port: 1      # VNC display 1 → TCP 5901; omit or set 0 to disable
+usb_devices:     # host USB devices passed through — see USB Passthrough
+  - vendor_id: "046d"
+    product_id: "085c"
+    name: C922 Pro Stream Webcam   # informational
+  - vendor_id: "0781"
+    product_id: "5583"
+    port: 3-2.2.4                  # optional: pin to one physical port
 created_at: 2026-03-17T09:00:00Z
 ```
 
@@ -348,6 +388,48 @@ vncviewer 127.0.0.1::5901
 
 > **Security:** VNC is bound to `127.0.0.1` only. To expose it remotely, use an SSH tunnel: `ssh -L 5901:127.0.0.1:5901 user@host`, then `vncviewer 127.0.0.1:1`.
 
+## USB Passthrough
+
+A VM can take over USB devices plugged into the host — a webcam, a USB stick, a security key, a serial adapter — and the guest sees them as if they were plugged into it directly. While the guest holds a device the host cannot use it; it comes back when the device is detached or the VM stops.
+
+Ostrich always gives a VM an xHCI controller and attaches each configured device to it:
+
+```
+-device qemu-xhci,id=xhci
+-device usb-host,id=usb-046d-085c,bus=xhci.0,vendorid=0x046d,productid=0x085c
+```
+
+Devices are matched by vendor/product ID, so they keep working when replugged into a different port or after a reboot. A device that is configured but not plugged in does not stop the VM from starting — QEMU picks it up as soon as it appears. When two identical devices are connected the picker pins the one you chose to its physical port (`hostbus`/`hostport`); you can also set `port` in `vm.yaml` by hand, using the sysfs name that `dmesg` prints (`usb 3-2.2.4: new high-speed USB device`).
+
+Because the controller is always present, devices can be hot-plugged into a running VM: the picker sends `device_add` / `device_del` over the monitor socket. A VM started by an older Ostrich has no controller yet, so hot-plug fails until it is restarted — the change is saved and applied on the next start either way.
+
+### Host permissions
+
+QEMU runs as your user and opens the device node under `/dev/bus/usb/`, which is normally writable by root only. Without access QEMU starts fine but never attaches the device and only complains on its (discarded) stderr, so Ostrich checks first: the picker flags such devices with **✗ no access**, and starting a VM whose device is plugged in but inaccessible fails with the command needed to fix it.
+
+Move the cursor onto a flagged device and the picker shows the command that grants access, ready to run in another terminal — select it with the mouse or press `y` to copy it to the clipboard (needs `wl-copy` or `xclip`), run it, then press `r` to rescan:
+
+```sh
+echo 'SUBSYSTEM=="usb",' 'ATTR{idVendor}=="046d",' 'ATTR{idProduct}=="085c",' 'TAG+="uaccess"' \
+  | sudo tee -a /etc/udev/rules.d/70-ostrich-usb.rules \
+  && sudo udevadm control --reload && sudo udevadm trigger
+```
+
+It appends one udev rule for the device, matched by ID, to `/etc/udev/rules.d/70-ostrich-usb.rules` (the file must sort before `73-seat-late.rules` for the `uaccess` tag to work), reloads udev and re-applies the rules to connected devices:
+
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085c", TAG+="uaccess"
+```
+
+`uaccess` gives the user logged in at the local seat an ACL on the node (systemd-logind). On a headless host or for a non-seat user, edit the rule to use a group instead: `..., MODE="0660", GROUP="plugdev"` and add your user to that group.
+
+### Notes
+
+- Hubs cannot be passed through; pass through the devices behind them.
+- A keyboard or mouse given to a VM is gone from the host until it is detached — keep another way to drive the TUI.
+- Host enumeration reads Linux sysfs. On other systems the picker cannot list devices, but `a` still adds them by ID.
+- `lsusb` shows the same `vendor:product` IDs the picker uses.
+
 ## QEMU Process Model
 
 - QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits.**
@@ -384,12 +466,16 @@ ostrich/
     ├── vm/
     │   ├── vm.go            # VMConfig struct, YAML schema, path helpers
     │   ├── manager.go       # list / create / delete VMs, qemu-img wrapper
-    │   └── process.go       # start / stop / status, console log reader
+    │   ├── process.go       # start / stop / status, console log reader
+    │   ├── usb.go           # host USB enumeration (sysfs), passthrough config, hot-plug
+    │   └── monitor.go       # HMP monitor socket client
     └── tui/
         ├── app.go           # root Bubbletea model, screen router
         ├── styles.go        # Lipgloss colour palette and styles
         ├── setup.go         # first-run wizard
         ├── list.go          # VM list screen
         ├── create.go        # VM creation form
+        ├── edit.go          # VM edit form
+        ├── usb.go           # USB passthrough picker
         └── detail.go        # VM detail + live console view
 ```

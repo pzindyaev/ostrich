@@ -96,6 +96,14 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string) {
 		args = append(args, "-vnc", fmt.Sprintf("127.0.0.1:%d", cfg.VNCPort))
 	}
 
+	// USB: an xHCI controller is always present so host devices can be
+	// hot-plugged into a running VM; configured devices are attached at boot.
+	// A device that is not connected yet is picked up by QEMU when plugged in.
+	args = append(args, "-device", "qemu-xhci,id="+usbControllerID)
+	for i, id := range USBDeviceIDs(cfg.USBDevices) {
+		args = append(args, "-device", usbHostDevice(cfg.USBDevices[i], id))
+	}
+
 	// Networking
 	switch cfg.Network.Type {
 	case NetworkUser:
@@ -129,6 +137,17 @@ func Start(storagePath string, cfg *VMConfig) error {
 	info, err := Status(storagePath, cfg.Name)
 	if err == nil && info.Status == StatusRunning {
 		return fmt.Errorf("VM %q is already running (PID %d)", cfg.Name, info.PID)
+	}
+
+	for _, d := range cfg.USBDevices {
+		if err := d.Validate(); err != nil {
+			return err
+		}
+	}
+	// QEMU's own failure to open a USB device only goes to its stderr (discarded
+	// below) and the VM would run with the device missing, so check up front.
+	if err := CheckUSBAccess(cfg.USBDevices); err != nil {
+		return err
 	}
 
 	bin, args := BuildQEMUArgs(cfg, storagePath)

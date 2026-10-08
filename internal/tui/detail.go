@@ -17,6 +17,9 @@ const (
 	consoleTailLines   = 200
 	consolePollSeconds = 2
 	consoleViewHeight  = 20
+	// detailChromeLines is everything on the screen besides the console
+	// viewport: header, info card (one USB line), labels, notice and help.
+	detailChromeLines = 21
 )
 
 // --- messages ---
@@ -26,6 +29,7 @@ type consoleRefreshedMsg struct {
 	lines   []string
 	status  vm.ProcessInfo
 	guestIP string
+	usb     []vm.USBState
 }
 type detailActionErrMsg struct{ err error }
 type detailActionOKMsg struct{ action string }
@@ -38,6 +42,7 @@ type VMDetailModel struct {
 	storagePath  string
 	status       vm.ProcessInfo
 	guestIP      string
+	usb          []vm.USBState
 	vp           viewport.Model
 	consoleLines []string
 	err          string
@@ -51,10 +56,7 @@ type VMDetailModel struct {
 func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) VMDetailModel {
 	vpHeight := consoleViewHeight
 	if height > 0 {
-		vpHeight = height - 20
-		if vpHeight < 5 {
-			vpHeight = 5
-		}
+		vpHeight = consoleHeight(height, cfg)
 	}
 	vp := viewport.New(width-4, vpHeight)
 	vp.SetContent("(no console output yet)")
@@ -71,12 +73,18 @@ func NewVMDetailModel(cfg *vm.VMConfig, storagePath string, width, height int) V
 func (m *VMDetailModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
-	vpHeight := h - 20
-	if vpHeight < 5 {
-		vpHeight = 5
-	}
 	m.vp.Width = w - 4
-	m.vp.Height = vpHeight
+	m.vp.Height = consoleHeight(h, m.cfg)
+}
+
+// consoleHeight is the viewport height that fits the terminal: every USB device
+// beyond the first adds a line to the info card.
+func consoleHeight(termHeight int, cfg *vm.VMConfig) int {
+	h := termHeight - detailChromeLines - max(0, len(cfg.USBDevices)-1)
+	if h < 5 {
+		h = 5
+	}
+	return h
 }
 
 func (m VMDetailModel) Init() tea.Cmd {
@@ -96,6 +104,7 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 	case consoleRefreshedMsg:
 		m.status = msg.status
 		m.guestIP = msg.guestIP
+		m.usb = msg.usb
 		m.consoleLines = msg.lines
 		content := "(no console output yet)"
 		if len(msg.lines) > 0 {
@@ -212,6 +221,10 @@ func (m VMDetailModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 		name := m.cfg.Name
 		return func() tea.Msg { return NavigateMsg{To: screenEdit, VMName: name} }
 
+	case "u":
+		name := m.cfg.Name
+		return func() tea.Msg { return NavigateMsg{To: screenUSB, VMName: name} }
+
 	case "r":
 		return refreshConsoleCmd(m.storagePath, m.cfg)
 
@@ -273,9 +286,9 @@ func (m VMDetailModel) View() string {
 	}
 
 	info := fmt.Sprintf(
-		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  IP:     %s\n  VNC:    %s",
+		"  Name:   %s\n  Status: %s\n  CPU:    %d cores\n  RAM:    %d MiB\n  Disk:   %d GiB\n  ISO:    %s\n  Net:    %s\n  IP:     %s\n  VNC:    %s\n  USB:    %s",
 		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
-		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, ipInfo, vncInfo,
+		ifEmpty(m.cfg.CDROMPath, "(none)"), netInfo, ipInfo, vncInfo, m.usbInfo(),
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n\n")
@@ -303,7 +316,7 @@ func (m VMDetailModel) View() string {
 
 	helpItems := []string{
 		"s: start", "x: stop",
-		"e: edit", "c: serial console", "v: VNC viewer",
+		"e: edit", "u: USB", "c: serial console", "v: VNC viewer",
 		"j/k: scroll", "g/G: top/bottom", "r: refresh",
 		"q/h/Esc: back",
 	}
@@ -313,6 +326,30 @@ func (m VMDetailModel) View() string {
 }
 
 // --- helpers ---
+
+// usbInfo renders the passed-through devices, one per line, with whether each
+// is connected to the host right now and openable by QEMU.
+func (m VMDetailModel) usbInfo() string {
+	if len(m.cfg.USBDevices) == 0 {
+		return "(none)"
+	}
+	states := m.usb
+	if len(states) != len(m.cfg.USBDevices) {
+		states = vm.MatchUSB(m.cfg.USBDevices, nil) // not refreshed yet: show as not connected
+	}
+	var lines []string
+	for _, s := range states {
+		state := styleHelp.Render("○ not connected")
+		switch {
+		case s.Host != nil && !s.Host.Writable:
+			state = styleError.Render("✗ no access")
+		case s.Host != nil:
+			state = styleSuccess.Render("● connected")
+		}
+		lines = append(lines, fmt.Sprintf("%-*s  %s  %s", usbNameWidth, truncate(s.Device.Label(), usbNameWidth), s.Device.ID(), state))
+	}
+	return strings.Join(lines, "\n          ")
+}
 
 // vncViewer describes a known VNC viewer and how to build its arguments.
 type vncViewer struct {
@@ -365,6 +402,6 @@ func refreshConsoleCmd(storagePath string, cfg *vm.VMConfig) tea.Cmd {
 		if info.Status == vm.StatusRunning {
 			ip = vm.GuestIP(cfg)
 		}
-		return consoleRefreshedMsg{lines: lines, status: info, guestIP: ip}
+		return consoleRefreshedMsg{lines: lines, status: info, guestIP: ip, usb: vm.USBStates(cfg.USBDevices)}
 	}
 }

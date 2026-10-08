@@ -87,15 +87,16 @@ type NetworkConfig struct {
 
 // VMConfig is the YAML schema stored in <vm-dir>/vm.yaml.
 type VMConfig struct {
-	Name      string        `yaml:"name"`
-	CPU       int           `yaml:"cpu"`
-	RAM       int           `yaml:"ram"`       // MiB
-	DiskSize  int           `yaml:"disk_size"` // GiB
-	Arch      string        `yaml:"arch"`      // e.g. "x86_64", "aarch64"
-	CDROMPath string        `yaml:"cdrom_path,omitempty"`
-	Network   NetworkConfig `yaml:"network"`
-	VNCPort   int           `yaml:"vnc_port,omitempty"` // VNC display number (TCP port = 5900+n); 0 = disabled
-	CreatedAt time.Time     `yaml:"created_at"`
+	Name       string        `yaml:"name"`
+	CPU        int           `yaml:"cpu"`
+	RAM        int           `yaml:"ram"`       // MiB
+	DiskSize   int           `yaml:"disk_size"` // GiB
+	Arch       string        `yaml:"arch"`      // e.g. "x86_64", "aarch64"
+	CDROMPath  string        `yaml:"cdrom_path,omitempty"`
+	Network    NetworkConfig `yaml:"network"`
+	VNCPort    int           `yaml:"vnc_port,omitempty"`    // VNC display number (TCP port = 5900+n); 0 = disabled
+	USBDevices []USBDevice   `yaml:"usb_devices,omitempty"` // host USB devices passed through to the guest
+	CreatedAt  time.Time     `yaml:"created_at"`
 }
 
 // --- Path helpers ---
