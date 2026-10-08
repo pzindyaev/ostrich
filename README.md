@@ -531,23 +531,6 @@ Stored at `~/.config/ostrich/config.json`:
 
 To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again.
 
-## Releasing
-
-Releases are built by [GoReleaser](https://goreleaser.com) in GitHub Actions. Pushing a tag that starts with `v` triggers the `Release` workflow, which runs the tests, cross-compiles for Linux and macOS (amd64 and arm64), and publishes a GitHub release with the archives, a `checksums.txt`, and a changelog grouped from the commit messages since the previous tag.
-
-```bash
-git tag -a v1.0.0 -m "v1.0.0"
-git push origin v1.0.0
-```
-
-Tags with a pre-release suffix (`v1.1.0-rc1`) are published as GitHub pre-releases. Commits prefixed with `feature:`/`feat:` and `fix:` are grouped in the changelog; `chore:`, `docs:`, `test:` and `ci:` commits are left out.
-
-To build the release artifacts locally without publishing anything (requires `goreleaser` on your `PATH`):
-
-```bash
-make snapshot     # output lands in ./dist
-```
-
 ## Project Structure
 
 ```
