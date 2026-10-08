@@ -1,0 +1,79 @@
+# GoReleaser configuration — https://goreleaser.com
+#
+# A GitHub release is produced by the release workflow whenever a tag matching
+# `v*` (e.g. v1.2.3) is pushed. Try it locally without publishing anything:
+#
+#   goreleaser release --snapshot --clean
+version: 2
+
+project_name: ostrich
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: ostrich
+    main: .
+    binary: ostrich
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    # e.g. ostrich_1.2.3_linux_amd64.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "(?i)typo"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(ure)?(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
+
+release:
+  github:
+    owner: pzindyaev
+    name: ostrich
+  # Pre-release tags such as v1.2.3-rc1 are marked as pre-releases on GitHub.
+  prerelease: auto
+  draft: false
+  mode: replace

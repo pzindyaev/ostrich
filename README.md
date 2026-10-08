@@ -57,10 +57,25 @@ brew install qemu swtpm && pip install virt-firmware
 
 ## Installation
 
+### Pre-built binaries
+
+Every tagged release ships static binaries for Linux and macOS (amd64 and arm64) on the [GitHub Releases](https://github.com/pzindyaev/ostrich/releases) page. Download the archive for your platform, verify it against `checksums.txt` if you like, and put the binary on your `PATH`:
+
+```bash
+# Example: Linux x86_64 — adjust the version and platform to taste
+VERSION=1.0.0
+curl -fsSLO https://github.com/pzindyaev/ostrich/releases/download/v${VERSION}/ostrich_${VERSION}_linux_amd64.tar.gz
+tar -xzf ostrich_${VERSION}_linux_amd64.tar.gz ostrich
+sudo install -m755 ostrich /usr/local/bin/ostrich
+ostrich --version
+```
+
+### From source
+
 ```bash
 git clone https://github.com/pzindyaev/ostrich
 cd ostrich
-go build -o ostrich .
+make build        # or: go build -o ostrich .
 ./ostrich
 ```
 
@@ -69,6 +84,8 @@ Or install directly to `$GOPATH/bin`:
 ```bash
 go install github.com/pzindyaev/ostrich@latest
 ```
+
+`ostrich --version` prints the version, commit and build date baked in at build time (`dev` for plain `go build`).
 
 ## First Run
 
@@ -514,12 +531,33 @@ Stored at `~/.config/ostrich/config.json`:
 
 To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again.
 
+## Releasing
+
+Releases are built by [GoReleaser](https://goreleaser.com) in GitHub Actions. Pushing a tag that starts with `v` triggers the `Release` workflow, which runs the tests, cross-compiles for Linux and macOS (amd64 and arm64), and publishes a GitHub release with the archives, a `checksums.txt`, and a changelog grouped from the commit messages since the previous tag.
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+Tags with a pre-release suffix (`v1.1.0-rc1`) are published as GitHub pre-releases. Commits prefixed with `feature:`/`feat:` and `fix:` are grouped in the changelog; `chore:`, `docs:`, `test:` and `ci:` commits are left out.
+
+To build the release artifacts locally without publishing anything (requires `goreleaser` on your `PATH`):
+
+```bash
+make snapshot     # output lands in ./dist
+```
+
 ## Project Structure
 
 ```
 ostrich/
 ├── main.go
 ├── go.mod
+├── Makefile
+├── .goreleaser.yaml         # release build matrix, archives, changelog
+├── .github/workflows/
+│   └── release.yml          # builds a GitHub release on every v* tag
 └── internal/
     ├── config/
     │   └── config.go        # app config load/save
