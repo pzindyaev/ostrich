@@ -104,10 +104,13 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) 
 		args = append(args, "-enable-kvm", "-cpu", "host")
 	}
 
-	// Boot media. The boot order only steers SeaBIOS; OVMF boots the disk
-	// once an OS is installed there and tries the CD before that.
+	// Boot media. The CD-ROM drive is always there, empty without an ISO, so
+	// one can be put in while the VM runs. The boot order only steers SeaBIOS;
+	// OVMF boots the disk once an OS is installed there and tries the CD
+	// before that.
+	args = append(args, cdromArgs(machine, cfg.CDROMPath)...)
 	if cfg.CDROMPath != "" {
-		args = append(args, "-cdrom", cfg.CDROMPath, "-boot", "order=dc")
+		args = append(args, "-boot", "order=dc")
 	}
 
 	// TPM 2.0, backed by the swtpm daemon started alongside QEMU.
@@ -130,6 +133,14 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) 
 	args = append(args, "-device", "qemu-xhci,id="+usbControllerID)
 	for i, id := range USBDeviceIDs(cfg.USBDevices) {
 		args = append(args, "-device", usbHostDevice(cfg.USBDevices[i], id))
+	}
+	// Disk images attached as USB sticks share that bus; each is a drive plus
+	// a usb-storage device on top of it.
+	for i, id := range USBImageIDs(cfg.USBImages) {
+		args = append(args,
+			"-drive", usbImageDrive(cfg.USBImages[i], usbImageDriveID(id)),
+			"-device", usbImageDevice(id, usbImageDriveID(id)),
+		)
 	}
 
 	// Networking
@@ -160,6 +171,12 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) 
 	return bin, args, nil
 }
 
+// qemuOptEscape makes s safe as a value in a QEMU option string, where a
+// comma is the separator and is written as ",,".
+func qemuOptEscape(s string) string {
+	return strings.ReplaceAll(s, ",", ",,")
+}
+
 // Start launches QEMU for the VM. The process is detached so it survives TUI exit.
 func Start(storagePath string, cfg *VMConfig) error {
 	info, err := Status(storagePath, cfg.Name)
@@ -175,6 +192,15 @@ func Start(storagePath string, cfg *VMConfig) error {
 	// QEMU's own failure to open a USB device only goes to its stderr (discarded
 	// below) and the VM would run with the device missing, so check up front.
 	if err := CheckUSBAccess(cfg.USBDevices); err != nil {
+		return err
+	}
+	// Likewise QEMU would not start with an image file missing.
+	if cfg.CDROMPath != "" {
+		if err := checkImage(cfg.CDROMPath); err != nil {
+			return fmt.Errorf("boot ISO: %w\nEject it in the ISO hot-plug screen, clear it in the edit form, or put the file back.", err)
+		}
+	}
+	if err := CheckUSBImages(cfg.USBImages); err != nil {
 		return err
 	}
 

@@ -50,7 +50,7 @@ var editHelp = [editFieldCount]string{
 	"Number of virtual CPU cores, e.g. 2",
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Can only grow, and the VM must be stopped. The guest must extend its own partitions",
-	"Full path to an ISO image to boot from, or leave blank to boot from disk",
+	"Full path to an ISO image to boot from, or leave blank to boot from disk; a running VM gets the new disc right away",
 	"h/l/←/→ to select. VM must be stopped; turning Secure Boot on rebuilds the UEFI NVRAM (boot entries)",
 	"h/l/←/→ to select. Emulated TPM 2.0 via swtpm — required by Windows 11",
 	"h/l/←/→ to select: user (NAT) · tap (bridge) · none",
@@ -326,9 +326,19 @@ func (m EditVMModel) save() (EditVMModel, tea.Cmd) {
 	}
 	m.err = ""
 	oldName := m.orig.Name
+	swapISO := m.running && cfg.CDROMPath != m.orig.CDROMPath
+	storagePath := m.mgr.StoragePath
 	return m, func() tea.Msg {
 		if err := m.mgr.Update(oldName, cfg); err != nil {
 			return vmUpdateErrMsg{err}
+		}
+		// The boot ISO is the one thing that can change under a running VM:
+		// the CD-ROM drive takes the new disc (or none) on the spot.
+		if swapISO {
+			if err := vm.CDROMChange(storagePath, cfg.Name, cfg.CDROMPath); err != nil {
+				return vmUpdateErrMsg{fmt.Errorf(
+					"saved, but the running VM's CD-ROM drive could not be changed (takes effect on next start):\n%w", err)}
+			}
 		}
 		return vmUpdatedMsg{name: cfg.Name}
 	}

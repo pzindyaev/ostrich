@@ -85,3 +85,18 @@ func TestCleanHMPResponseWithoutEcho(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestHMPQuote(t *testing.T) {
+	cases := map[string]string{
+		`file=/isos/a.iso`:           `"file=/isos/a.iso"`,
+		`file=/isos/my disk.iso`:     `"file=/isos/my disk.iso"`,
+		`file=/isos/say "hi".iso`:    `"file=/isos/say \"hi\".iso"`,
+		`file=C:\isos\a.iso`:         `"file=C:\\isos\\a.iso"`,
+		"file=/isos/line\nbreak.iso": `"file=/isos/line\nbreak.iso"`,
+	}
+	for in, want := range cases {
+		if got := hmpQuote(in); got != want {
+			t.Errorf("hmpQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

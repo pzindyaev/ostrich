@@ -168,6 +168,11 @@ func (m VMListModel) handleKey(msg tea.KeyMsg) (VMListModel, tea.Cmd) {
 			name := m.cfgs[m.cursor].Name
 			return m, func() tea.Msg { return NavigateMsg{To: screenUSB, VMName: name} }
 		}
+	case "i":
+		if len(m.cfgs) > 0 {
+			name := m.cfgs[m.cursor].Name
+			return m, func() tea.Msg { return NavigateMsg{To: screenISO, VMName: name} }
+		}
 	case "s":
 		if len(m.cfgs) > 0 {
 			cfg := m.cfgs[m.cursor]
@@ -274,6 +279,7 @@ func (m VMListModel) View() string {
 		"n: new",
 		"e: edit",
 		"u: USB",
+		"i: ISO",
 		"s: start",
 		"x: stop",
 		"d: delete",

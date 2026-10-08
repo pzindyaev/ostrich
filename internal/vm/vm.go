@@ -107,6 +107,7 @@ type VMConfig struct {
 	Network    NetworkConfig `yaml:"network"`
 	VNCPort    int           `yaml:"vnc_port,omitempty"`    // VNC display number (TCP port = 5900+n); 0 = disabled
 	USBDevices []USBDevice   `yaml:"usb_devices,omitempty"` // host USB devices passed through to the guest
+	USBImages  []USBImage    `yaml:"usb_images,omitempty"`  // disk images attached as read-only USB drives (ISO hot-plug)
 	CreatedAt  time.Time     `yaml:"created_at"`
 }
 

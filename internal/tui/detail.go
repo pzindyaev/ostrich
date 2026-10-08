@@ -18,8 +18,9 @@ const (
 	consolePollSeconds = 2
 	consoleViewHeight  = 20
 	// detailChromeLines is everything on the screen besides the console
-	// viewport: header, info card (one USB line), labels, notice and help.
-	detailChromeLines = 22
+	// viewport: header, info card (one USB line, one USB ISO line), labels,
+	// notice and help.
+	detailChromeLines = 23
 )
 
 // --- messages ---
@@ -30,6 +31,8 @@ type consoleRefreshedMsg struct {
 	status  vm.ProcessInfo
 	guestIP string
 	usb     []vm.USBState
+	cdrom   vm.ImageState // the boot ISO; meaningless when none is configured
+	images  []vm.ImageState
 }
 type detailActionErrMsg struct{ err error }
 type detailActionOKMsg struct{ action string }
@@ -43,6 +46,8 @@ type VMDetailModel struct {
 	status       vm.ProcessInfo
 	guestIP      string
 	usb          []vm.USBState
+	cdrom        vm.ImageState
+	images       []vm.ImageState
 	vp           viewport.Model
 	consoleLines []string
 	err          string
@@ -96,9 +101,9 @@ func (m *VMDetailModel) reloadConsole(follow bool) {
 }
 
 // consoleHeight is the viewport height that fits the terminal: every USB device
-// beyond the first adds a line to the info card.
+// or image beyond the first adds a line to the info card.
 func consoleHeight(termHeight int, cfg *vm.VMConfig) int {
-	h := termHeight - detailChromeLines - max(0, len(cfg.USBDevices)-1)
+	h := termHeight - detailChromeLines - max(0, len(cfg.USBDevices)-1) - max(0, len(cfg.USBImages)-1)
 	if h < 5 {
 		h = 5
 	}
@@ -123,6 +128,8 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 		m.status = msg.status
 		m.guestIP = msg.guestIP
 		m.usb = msg.usb
+		m.cdrom = msg.cdrom
+		m.images = msg.images
 		m.consoleLines = msg.lines
 		// Keep following the newest output unless the user has scrolled up.
 		m.reloadConsole(m.vp.AtBottom())
@@ -236,6 +243,10 @@ func (m VMDetailModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 		name := m.cfg.Name
 		return func() tea.Msg { return NavigateMsg{To: screenUSB, VMName: name} }
 
+	case "i":
+		name := m.cfg.Name
+		return func() tea.Msg { return NavigateMsg{To: screenISO, VMName: name} }
+
 	case "r":
 		return refreshConsoleCmd(m.storagePath, m.cfg)
 
@@ -297,9 +308,9 @@ func (m VMDetailModel) View() string {
 	}
 
 	info := fmt.Sprintf(
-		"  Name:     %s\n  Status:   %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  IP:       %s\n  VNC:      %s\n  USB:      %s",
+		"  Name:     %s\n  Status:   %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  IP:       %s\n  VNC:      %s\n  USB:      %s\n  USB ISO:  %s",
 		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
-		ifEmpty(m.cfg.CDROMPath, "(none)"), m.cfg.FirmwareLabel(), netInfo, ipInfo, vncInfo, m.usbInfo(),
+		m.cdromInfo(), m.cfg.FirmwareLabel(), netInfo, ipInfo, vncInfo, m.usbInfo(), m.imageInfo(),
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n\n")
@@ -327,7 +338,7 @@ func (m VMDetailModel) View() string {
 
 	helpItems := []string{
 		"s: start", "x: stop",
-		"e: edit", "u: USB", "c: serial console", "v: VNC viewer",
+		"e: edit", "u: USB", "i: ISO hot-plug", "c: serial console", "v: VNC viewer",
 		"j/k: scroll", "g/G: top/bottom", "r: refresh",
 		"q/h/Esc: back",
 	}
@@ -358,6 +369,35 @@ func (m VMDetailModel) usbInfo() string {
 			state = styleSuccess.Render("● connected")
 		}
 		lines = append(lines, fmt.Sprintf("%-*s  %s  %s", usbNameWidth, truncate(s.Device.Label(), usbNameWidth), s.Device.ID(), state))
+	}
+	return strings.Join(lines, "\n            ")
+}
+
+// cdromInfo renders the boot ISO with whether the file is there on the host.
+func (m VMDetailModel) cdromInfo() string {
+	if m.cfg.CDROMPath == "" {
+		return "(none)"
+	}
+	s := m.cdrom
+	if s.Path != m.cfg.CDROMPath {
+		s = vm.ImageStateOf(m.cfg.CDROMPath) // not refreshed yet
+	}
+	return m.cfg.CDROMPath + "  " + imageState(s)
+}
+
+// imageInfo renders the images attached as USB drives, one per line, with
+// whether each file is still there on the host.
+func (m VMDetailModel) imageInfo() string {
+	if len(m.cfg.USBImages) == 0 {
+		return "(none)"
+	}
+	states := m.images
+	if len(states) != len(m.cfg.USBImages) {
+		states = vm.USBImageStates(m.cfg.USBImages) // not refreshed yet
+	}
+	var lines []string
+	for _, s := range states {
+		lines = append(lines, fmt.Sprintf("%-*s  %s", isoPathWidth, truncateLeft(s.Path, isoPathWidth), imageState(s)))
 	}
 	return strings.Join(lines, "\n            ")
 }
@@ -416,6 +456,11 @@ func refreshConsoleCmd(storagePath string, cfg *vm.VMConfig) tea.Cmd {
 		if info.Status == vm.StatusRunning {
 			ip = vm.GuestIP(cfg)
 		}
-		return consoleRefreshedMsg{lines: lines, status: info, guestIP: ip, usb: vm.USBStates(cfg.USBDevices)}
+		return consoleRefreshedMsg{
+			lines: lines, status: info, guestIP: ip,
+			usb:    vm.USBStates(cfg.USBDevices),
+			cdrom:  vm.ImageStateOf(cfg.CDROMPath),
+			images: vm.USBImageStates(cfg.USBImages),
+		}
 	}
 }

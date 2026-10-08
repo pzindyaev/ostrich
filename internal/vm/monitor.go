@@ -48,6 +48,13 @@ func hmpCommand(sockPath, command string, timeout time.Duration) (string, error)
 	return cleanHMPResponse(raw, command), nil
 }
 
+// hmpQuote wraps s as one HMP string argument. The monitor splits arguments
+// on whitespace unless they are double-quoted, inside which backslash, the
+// quote itself and line breaks are escaped.
+func hmpQuote(s string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`).Replace(s) + `"`
+}
+
 // readUntilPrompt accumulates monitor output until the prompt arrives, and
 // returns everything before it.
 func readUntilPrompt(r io.Reader) (string, error) {

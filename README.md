@@ -22,6 +22,7 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 - **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
+- **ISO hot-plug** — press `i` to swap or eject the boot ISO in a running VM's CD-ROM drive, and to attach ISOs (or any raw disk image) as read-only USB drives; applied in the running guest on the spot, at boot otherwise
 - **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
 - **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
 - **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
@@ -123,6 +124,7 @@ The main screen lists all VMs with their running status and resource summary.
 | `n` | Create new VM |
 | `e` | Edit selected VM |
 | `u` | USB passthrough for selected VM |
+| `i` | ISO hot-plug for selected VM |
 | `s` | Start selected VM |
 | `x` | Stop selected VM |
 | `d` | Delete selected VM (asks confirmation) |
@@ -139,6 +141,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 | `x` | Stop VM (when running) |
 | `e` | Edit VM properties |
 | `u` | **USB passthrough** — pick host devices for this VM |
+| `i` | **ISO hot-plug** — swap the boot ISO, attach disk images as USB drives |
 | `c` | **Connect to serial console interactively** (requires `socat`) |
 | `v` | **Launch VNC viewer** for this VM (requires VNC enabled and a VNC viewer installed) |
 | `j` / `↓` | Scroll console down |
@@ -183,7 +186,7 @@ Press `e` on the list or detail screen to edit an existing VM. All properties ar
 | Name | Renames the VM directory; VM must be stopped |
 | CPU Cores / RAM (MiB) | Same rules as the create form |
 | Disk Size (GiB) | Can only grow (`qemu-img resize`); VM must be stopped. The guest still has to extend its own partitions/filesystem |
-| Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation) |
+| Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation). A running VM gets the new disc right away |
 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot`; VM must be stopped. Turning Secure Boot on rebuilds the VM's UEFI NVRAM |
 | TPM 2.0 | `disabled` · `enabled`; needs `swtpm` on the host |
 | Network | `user (NAT)` · `tap (bridge)` · `none` |
@@ -231,6 +234,49 @@ Press `u` on the list or detail screen. It lists the USB devices connected to th
 
 Every toggle is written to `vm.yaml` immediately. If the VM is running the device is hot-plugged (or unplugged) through the QEMU monitor on the spot; otherwise it is attached the next time the VM starts. See [USB Passthrough](#usb-passthrough) for the host-side permissions this needs.
 
+### ISO hot-plug screen
+
+Press `i` on the list or detail screen. The top shows the boot ISO in the VM's CD-ROM drive, which you can swap or eject; below it are the disk images attached to the VM as USB drives, which you can add to or detach from. On a running VM every change is applied in the guest on the spot, through the QEMU monitor; on a stopped VM it takes effect at the next start. Either way it is written to `vm.yaml` immediately.
+
+```
+  Ostrich — ISO Hot-plug: debian-12
+
+  ● running — changes are applied in the guest right away
+
+  Boot ISO (CD-ROM drive)
+
+    /home/user/iso/debian-12.3.0-amd64-netinst.iso                            ● 631 MiB
+
+  USB drives   images attached read-only; the guest sees each one as a USB stick
+
+  ▸ /home/user/iso/virtio-win.iso                                              ● 611 MiB
+    /home/user/iso/old-drivers.iso                                             ✗ not found
+
+  c: change boot ISO   e: eject   a: attach USB image   Space/Enter/d: detach   r: refresh   j/k: move   q/Esc: back
+```
+
+| Key | Action |
+|-----|--------|
+| `c` | Put a different ISO in the CD-ROM drive: type its path (`~` is your home directory) and press `Enter` |
+| `e` | Eject the boot ISO, leaving the drive empty |
+| `a` | Attach an image as a USB drive, by path |
+| `Space` / `Enter` / `d` | Detach the USB image under the cursor |
+| `r` | Re-check the image files |
+| `j` / `k`, `g` / `G` | Move cursor |
+| `q` / `h` / `Esc` | Back to VM detail |
+
+**Boot ISO.** The CD-ROM drive is always part of the VM, empty when no ISO is configured, so a disc can go in at any time. It sits where QEMU's `-cdrom` puts it, so guests see the same hardware as before. Swapping forces the tray open first (`eject -f cdrom`, then `change cdrom <path> raw`), so a guest that has locked it, as Linux does while the disc is mounted, cannot hold up the swap; it sees the disc change the way it would with a real drive. The edit form's Boot ISO field does the same when the VM is running. A VM whose boot ISO has gone missing refuses to start and names the file.
+
+**USB drives.** Images are attached read-only, so the file is never modified and several VMs can share one; the guest sees a removable USB stick holding the image byte for byte. Each image is a drive plus a `usb-storage` device on the VM's xHCI controller. A VM whose image file has gone missing refuses to start, too.
+
+```
+-drive if=ide,index=2,id=cdrom,media=cdrom,format=raw,file=/home/user/iso/debian-12.3.0-amd64-netinst.iso
+-drive if=none,id=usbimg-virtio-win.iso-drive,format=raw,readonly=on,file=/home/user/iso/virtio-win.iso
+-device usb-storage,id=usbimg-virtio-win.iso,bus=xhci.0,drive=usbimg-virtio-win.iso-drive,removable=on
+```
+
+What the guest makes of a USB image depends on the image. A Linux guest mounts the ISO9660 filesystem straight off the stick (`mount /dev/sdb /mnt`), and a fresh VM with an empty disk boots a hybrid ISO — most Linux installers — from it under both BIOS and UEFI. Windows does not mount ISO9660 from a disk-class device, so a plain ISO shows up there as an unformatted drive; for Windows, put the ISO in the CD-ROM drive instead. Any raw disk image works as a USB drive, not just `.iso` files.
+
 ## VM Storage Layout
 
 ```
@@ -264,7 +310,7 @@ cpu: 2
 ram: 2048        # MiB
 disk_size: 20    # GiB (informational; actual size lives in disk.qcow2)
 arch: x86_64
-cdrom_path: /home/user/iso/debian-12.iso   # omit after install
+cdrom_path: /home/user/iso/debian-12.iso   # the CD-ROM drive; omit (or eject with i, e) after install
 firmware: uefi      # bios (default) | uefi — see UEFI, Secure Boot and TPM 2.0
 secure_boot: true   # enforce Secure Boot with Microsoft's keys; implies uefi
 tpm: true           # emulated TPM 2.0 (swtpm)
@@ -286,6 +332,8 @@ usb_devices:     # host USB devices passed through — see USB Passthrough
   - vendor_id: "0781"
     product_id: "5583"
     port: 3-2.2.4                  # optional: pin to one physical port
+usb_images:      # disk images attached as read-only USB drives — see ISO hot-plug screen
+  - path: /home/user/iso/virtio-win.iso
 created_at: 2026-03-17T09:00:00Z
 ```
 
@@ -398,7 +446,7 @@ The platform key is generated for the VM and thrown away; the db gets *Microsoft
 1. Create the VM with at least 2 cores, 4096 MiB and 64 GiB, the Windows ISO as boot ISO, firmware `UEFI + Secure Boot`, TPM `enabled` and a VNC display. Windows 10 is happy with plain `BIOS`.
 2. Start it and press `v`. The ISO asks to *Press any key to boot from CD or DVD* — do so within a few seconds, or OVMF drops into its boot menu (pick the DVD-ROM there, or stop and start the VM).
 3. Windows setup has no drivers for the virtio disk and network card, so its disk list is empty. Get the [virtio-win driver ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso), copy its contents to a USB stick, pass the stick through with `u`, and choose *Load driver* → `viostor\w11\amd64` in setup. Install `NetKVM\w11\amd64` the same way from Device Manager after the first boot.
-4. Once installed, clear the Boot ISO in the edit form.
+4. Once installed, eject the boot ISO: press `i` on the running VM, then `e` (or clear the Boot ISO in the edit form).
 
 ## Serial Console
 
@@ -548,7 +596,9 @@ ostrich/
     │   ├── vm.go            # VMConfig struct, YAML schema, path helpers
     │   ├── manager.go       # list / create / delete VMs, qemu-img wrapper
     │   ├── process.go       # start / stop / status, console log reader
+    │   ├── cdrom.go         # the CD-ROM drive holding the boot ISO, hot-swap
     │   ├── usb.go           # host USB enumeration (sysfs), passthrough config, hot-plug
+    │   ├── usbimage.go      # disk images attached as USB drives (ISO hot-plug)
     │   └── monitor.go       # HMP monitor socket client
     └── tui/
         ├── app.go           # root Bubbletea model, screen router
@@ -558,5 +608,6 @@ ostrich/
         ├── create.go        # VM creation form
         ├── edit.go          # VM edit form
         ├── usb.go           # USB passthrough picker
+        ├── iso.go           # ISO hot-plug screen
         └── detail.go        # VM detail + live console view
 ```
