@@ -23,6 +23,7 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
 - **ISO hot-plug** — press `i` to swap or eject the boot ISO in a running VM's CD-ROM drive, and to attach ISOs (or any raw disk image) as read-only USB drives; applied in the running guest on the spot, at boot otherwise
+- **VM templates** — press `t` to freeze a stopped VM (disk, UEFI NVRAM, TPM state) as a template; `T` lists the templates, and new VMs are made from one with their own name, CPU, RAM and network — see [Templates](#templates)
 - **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
 - **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
 - **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
@@ -125,6 +126,8 @@ The main screen lists all VMs with their running status and resource summary.
 | `e` | Edit selected VM |
 | `u` | USB passthrough for selected VM |
 | `i` | ISO hot-plug for selected VM |
+| `t` | Save selected VM as a template (it must be stopped) |
+| `T` | Open the templates screen |
 | `s` | Start selected VM |
 | `x` | Stop selected VM |
 | `d` | Delete selected VM (asks confirmation) |
@@ -142,6 +145,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 | `e` | Edit VM properties |
 | `u` | **USB passthrough** — pick host devices for this VM |
 | `i` | **ISO hot-plug** — swap the boot ISO, attach disk images as USB drives |
+| `t` | **Save as template** — freeze this (stopped) VM as a template for new VMs |
 | `c` | **Connect to serial console interactively** (requires `socat`) |
 | `v` | **Launch VNC viewer** for this VM (requires VNC enabled and a VNC viewer installed) |
 | `j` / `↓` | Scroll console down |
@@ -277,6 +281,129 @@ Press `i` on the list or detail screen. The top shows the boot ISO in the VM's C
 
 What the guest makes of a USB image depends on the image. A Linux guest mounts the ISO9660 filesystem straight off the stick (`mount /dev/sdb /mnt`), and a fresh VM with an empty disk boots a hybrid ISO — most Linux installers — from it under both BIOS and UEFI. Windows does not mount ISO9660 from a disk-class device, so a plain ISO shows up there as an unformatted drive; for Windows, put the ISO in the CD-ROM drive instead. Any raw disk image works as a USB drive, not just `.iso` files.
 
+### Templates
+
+A template is a stopped VM frozen as a starting point for new VMs: a copy of its disk image together with the machine definition the installed OS depends on (architecture, firmware, Secure Boot, TPM), its UEFI NVRAM (the boot entries) and its TPM state. Install and configure an OS once, save it as a template, and every VM made from it boots straight into that system with its own name, CPU, RAM, network and MAC address.
+
+Templates are full copies: deleting the source VM, or the template, does not affect VMs made from it. They live in `.templates/` under the VM storage directory — see [VM Storage Layout](#vm-storage-layout).
+
+#### Save as template
+
+Press `t` on the list or detail screen. **The VM must be stopped** — shut it down from inside the guest first. Ostrich refuses a running VM rather than stopping it, because stopping QEMU kills the machine without a guest shutdown and would leave the filesystem in the copy dirty, which is the opposite of what a template is for.
+
+```
+  Ostrich — Save as Template: debian-12
+
+  ● stopped — the disk is in a consistent state and can be copied
+
+  What goes into the template
+  ╭──────────────────────────────────────────────────────────────────────────────────────╮
+  │   Disk:     20 GiB virtual, 4.3 GiB on the host — copied in full                     │
+  │   Firmware: UEFI, TPM 2.0 — with the UEFI NVRAM (boot entries) and the TPM state     │
+  │   Defaults: 2 cores, 2048 MiB RAM, user network — chosen anew for each VM made from it│
+  ╰──────────────────────────────────────────────────────────────────────────────────────╯
+  Left out, as they belong to one VM: MAC address, port forwards, VNC display, boot ISO, USB devices and images.
+
+  ▸ Template name    debian-12-base
+    Description      Debian 12 with docker and my dotfiles
+
+      Save template
+
+  Tab/↓: next   Shift+Tab/↑: back   Ctrl-s: save   Esc: cancel
+```
+
+| Field | Notes |
+|-------|-------|
+| Template name | Letters, digits, hyphens and underscores; defaults to the VM's name |
+| Description | Optional, shown in the templates list |
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Enter` / `↓` | Next field |
+| `Shift-Tab` / `↑` | Previous field |
+| `Ctrl-s` (or `Enter` on **Save template**) | Save |
+| `Esc` | Cancel and return to VM detail |
+
+The disk image is copied with `qemu-img convert`, which writes a fresh, compact qcow2 holding only the allocated clusters; the virtual size stays the same. This takes a while for a large disk — the screen shows a spinner meanwhile and the TUI stays responsive. Nothing half-made is left behind if the copy fails.
+
+What a template carries, and what it does not:
+
+| Carried | Left out (belongs to one VM or to the host) |
+|---------|---------------------------------------------|
+| Disk image | MAC address (a new one is generated) |
+| UEFI NVRAM — boot entries, Secure Boot keys | Port forwards (two VMs cannot share a host port) |
+| TPM state — so BitLocker and Windows Hello still work | VNC display number (two VMs cannot share a port; a new VM gets a free one if the source had VNC) |
+| Architecture, firmware, Secure Boot, TPM | Boot ISO (a clone would run the installer again) |
+| CPU, RAM and network type, as defaults | USB devices and USB images |
+
+#### Templates screen
+
+Press `T` on the list screen. It lists the templates with the machine each one defines; the box below describes the one under the cursor.
+
+```
+  Ostrich — VM Templates
+
+    debian-12-base        CPU: 2  RAM: 2048 MiB  Disk: 20 GiB   UEFI, TPM 2.0                user
+  ▸ win11-base            CPU: 4  RAM: 8192 MiB  Disk: 64 GiB   UEFI + Secure Boot, TPM 2.0  user
+
+  ╭──────────────────────────────────────────────────────────────────────────────────────╮
+  │   Template: win11-base                                                               │
+  │   About:    Windows 11 23H2, updates applied, virtio drivers installed               │
+  │   From VM:  windows-11, saved 2026-10-09 13:33                                       │
+  │   Disk:     64 GiB virtual, 18.2 GiB on the host                                     │
+  │   Firmware: UEFI + Secure Boot, TPM 2.0                                              │
+  │   Defaults: 4 cores, 8192 MiB RAM, user network — chosen anew for each VM            │
+  │   VNC:      enabled — a new VM gets a free display number                            │
+  ╰──────────────────────────────────────────────────────────────────────────────────────╯
+
+  j/k: navigate  g/G: top/bottom  l/enter/n: new VM from template  d: delete  r: refresh  q/h/Esc: back
+```
+
+| Key | Action |
+|-----|--------|
+| `l` / `Enter` / `n` | Create a new VM from the template under the cursor |
+| `d` | Delete the template (asks confirmation; VMs made from it are not affected) |
+| `r` | Refresh |
+| `j` / `k`, `g` / `G` | Move cursor |
+| `q` / `h` / `Esc` | Back to VM list |
+
+#### New VM from template
+
+A 6-step wizard, pre-filled with the template's defaults. The disk, architecture, firmware, Secure Boot and TPM come from the template and are not asked for.
+
+| Step | Field | Notes |
+|------|-------|-------|
+| 1 | VM Name | Defaults to `<template>-1`, `-2`, … whichever is free |
+| 2 | CPU Cores | Positive integer |
+| 3 | RAM (MiB) | Minimum 64 |
+| 4 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
+| 5 | Port forwards | `user` mode only; blank for none. Pick host ports no other VM uses |
+| 6 | Confirm | Review and create |
+
+```
+  Ostrich — New VM from Template: win11-base
+
+  Step 6 / 6   —   64 GiB disk, UEFI + Secure Boot, TPM 2.0: from the template
+
+  Confirm
+  Press Enter to create the VM. The disk is copied from the template, which takes a while for a large disk
+
+  ╭─────────────────────────────────────────────────────────╮
+  │   Name:     win11-test                                  │
+  │   Template: win11-base                                  │
+  │   CPU:      2 cores                                     │
+  │   RAM:      4096 MiB                                    │
+  │   Disk:     64 GiB (copied from the template)           │
+  │   Firmware: UEFI + Secure Boot, TPM 2.0                 │
+  │   Net:      user [tcp:3390:3389]                        │
+  │   VNC:      display 2 (port 5902) — the lowest one free │
+  ╰─────────────────────────────────────────────────────────╯
+
+  Enter/j: create VM   k/Shift+Tab: back   Esc: cancel
+```
+
+The keys are those of the [create form](#create-vm-form). The new VM gets a fresh MAC address and, when the template's source VM had a VNC display, the lowest display number no existing VM uses; change either later in the edit form. Everything else about the VM — ISO, USB, port forwards, VNC — is edited the same way as for any other VM.
+
 ## VM Storage Layout
 
 ```
@@ -291,14 +418,22 @@ What the guest makes of a USB image depends on the image. A Linux guest mounts t
 │   ├── serial.sock             ← serial console Unix socket (interactive, while running)
 │   ├── qemu.pid                ← PID of the running QEMU process
 │   └── qemu-monitor.sock       ← QEMU monitor Unix socket
-└── ubuntu-24/
-    ├── vm.yaml
-    ├── disk.qcow2
-    ├── console.log
-    ├── serial.sock
-    ├── qemu.pid
-    └── qemu-monitor.sock
+├── ubuntu-24/
+│   ├── vm.yaml
+│   ├── disk.qcow2
+│   ├── console.log
+│   ├── serial.sock
+│   ├── qemu.pid
+│   └── qemu-monitor.sock
+└── .templates/                 ← VM templates — see Templates
+    └── debian-12-base/
+        ├── template.yaml       ← template description and machine definition
+        ├── disk.qcow2          ← copy of the source VM's disk
+        ├── efivars.fd          ← copy of its UEFI NVRAM (UEFI templates only)
+        └── tpm/                ← copy of its TPM state (TPM templates only)
 ```
+
+The templates directory starts with a dot so it can never clash with a VM: VM names may only contain letters, digits, hyphens and underscores.
 
 ## VM Configuration File
 
@@ -335,6 +470,26 @@ usb_devices:     # host USB devices passed through — see USB Passthrough
 usb_images:      # disk images attached as read-only USB drives — see ISO hot-plug screen
   - path: /home/user/iso/virtio-win.iso
 created_at: 2026-03-17T09:00:00Z
+```
+
+### Template file
+
+Each template is described by a `template.yaml` in its directory under `.templates/`. It carries only what defines the machine; per-VM settings are chosen when a VM is made from it.
+
+```yaml
+name: debian-12-base
+description: Debian 12 with docker and my dotfiles   # optional
+source_vm: debian-12   # the VM it was made from (informational)
+cpu: 2                 # defaults for a new VM, changeable on creation
+ram: 2048
+disk_size: 20          # GiB; the disk image is copied as is
+arch: x86_64
+firmware: uefi         # bios | uefi
+secure_boot: false
+tpm: true
+network: user          # default for a new VM, changeable on creation
+vnc: true              # the source had a VNC display; a new VM gets a free one
+created_at: 2026-10-09T13:33:00Z
 ```
 
 ### Network modes

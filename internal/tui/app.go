@@ -16,12 +16,16 @@ const (
 	screenEdit
 	screenUSB
 	screenISO
+	screenTemplates
+	screenTemplateSave
+	screenFromTemplate
 )
 
 // NavigateMsg is returned by sub-models to request a screen transition.
 type NavigateMsg struct {
-	To     screen
-	VMName string // used when navigating to screenDetail / screenEdit / screenUSB / screenISO
+	To       screen
+	VMName   string // used when navigating to screenDetail / screenEdit / screenUSB / screenISO / screenTemplateSave
+	Template string // used when navigating to screenFromTemplate
 }
 
 // App is the root Bubbletea model. It owns all sub-models and delegates
@@ -41,6 +45,10 @@ type App struct {
 	edit   EditVMModel
 	usb    USBModel
 	iso    ISOModel
+
+	templates TemplatesModel
+	saveTpl   SaveTemplateModel
+	fromTpl   FromTemplateModel
 }
 
 // NewApp constructs the root model. It detects first-run by checking for config.
@@ -108,6 +116,12 @@ func (m App) View() string {
 		return m.usb.View()
 	case screenISO:
 		return m.iso.View()
+	case screenTemplates:
+		return m.templates.View()
+	case screenTemplateSave:
+		return m.saveTpl.View()
+	case screenFromTemplate:
+		return m.fromTpl.View()
 	}
 	return ""
 }
@@ -135,6 +149,15 @@ func (m App) propagateSize() (tea.Model, tea.Cmd) {
 	case screenISO:
 		m.iso.width = m.width
 		m.iso.height = m.height
+	case screenTemplates:
+		m.templates.width = m.width
+		m.templates.height = m.height
+	case screenTemplateSave:
+		m.saveTpl.width = m.width
+		m.saveTpl.height = m.height
+	case screenFromTemplate:
+		m.fromTpl.width = m.width
+		m.fromTpl.height = m.height
 	}
 	return m, cmd
 }
@@ -157,6 +180,12 @@ func (m App) delegateUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usb, cmd = m.usb.Update(msg)
 	case screenISO:
 		m.iso, cmd = m.iso.Update(msg)
+	case screenTemplates:
+		m.templates, cmd = m.templates.Update(msg)
+	case screenTemplateSave:
+		m.saveTpl, cmd = m.saveTpl.Update(msg)
+	case screenFromTemplate:
+		m.fromTpl, cmd = m.fromTpl.Update(msg)
 	}
 	return m, cmd
 }
@@ -235,6 +264,34 @@ func (m App) handleNavigate(msg NavigateMsg) (tea.Model, tea.Cmd) {
 		m.iso = NewISOModel(cfg, m.appCfg.VMStoragePath, m.width, m.height)
 		m.screen = screenISO
 		return m, m.iso.Init()
+
+	case screenTemplates:
+		m.templates = NewTemplatesModel(m.vmMgr, m.width, m.height)
+		m.screen = screenTemplates
+		return m, m.templates.Init()
+
+	case screenTemplateSave:
+		cfg, err := vm.LoadConfig(m.appCfg.VMStoragePath, msg.VMName)
+		if err != nil {
+			m.list = NewVMListModel(m.vmMgr, m.width, m.height)
+			m.screen = screenList
+			return m, m.list.Init()
+		}
+		m.saveTpl = NewSaveTemplateModel(m.vmMgr, cfg, m.width, m.height)
+		m.screen = screenTemplateSave
+		return m, m.saveTpl.Init()
+
+	case screenFromTemplate:
+		tpl, err := vm.LoadTemplate(m.appCfg.VMStoragePath, msg.Template)
+		if err != nil {
+			// The template is gone — back to the templates list.
+			m.templates = NewTemplatesModel(m.vmMgr, m.width, m.height)
+			m.screen = screenTemplates
+			return m, m.templates.Init()
+		}
+		m.fromTpl = NewFromTemplateModel(m.vmMgr, tpl, m.width, m.height)
+		m.screen = screenFromTemplate
+		return m, m.fromTpl.Init()
 	}
 	return m, nil
 }

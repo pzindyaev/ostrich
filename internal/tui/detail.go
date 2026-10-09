@@ -247,6 +247,10 @@ func (m VMDetailModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 		name := m.cfg.Name
 		return func() tea.Msg { return NavigateMsg{To: screenISO, VMName: name} }
 
+	case "t":
+		name := m.cfg.Name
+		return func() tea.Msg { return NavigateMsg{To: screenTemplateSave, VMName: name} }
+
 	case "r":
 		return refreshConsoleCmd(m.storagePath, m.cfg)
 
@@ -338,7 +342,7 @@ func (m VMDetailModel) View() string {
 
 	helpItems := []string{
 		"s: start", "x: stop",
-		"e: edit", "u: USB", "i: ISO hot-plug", "c: serial console", "v: VNC viewer",
+		"e: edit", "u: USB", "i: ISO hot-plug", "t: save as template", "c: serial console", "v: VNC viewer",
 		"j/k: scroll", "g/G: top/bottom", "r: refresh",
 		"q/h/Esc: back",
 	}

@@ -31,7 +31,7 @@ func (m *Manager) List() ([]*VMConfig, error) {
 
 	var cfgs []*VMConfig
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || e.Name() == templatesDirName {
 			continue
 		}
 		cfg, err := LoadConfig(m.StoragePath, e.Name())
@@ -80,7 +80,7 @@ func (m *Manager) Create(cfg *VMConfig) error {
 
 	diskPath := DiskPath(m.StoragePath, cfg.Name)
 	diskSizeStr := fmt.Sprintf("%dG", cfg.DiskSize)
-	out, err := exec.Command("qemu-img", "create", "-f", "qcow2", diskPath, diskSizeStr).CombinedOutput()
+	out, err := exec.Command(qemuImgBin, "create", "-f", "qcow2", diskPath, diskSizeStr).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("create disk image: %w\n%s", err, out)
 	}
@@ -131,7 +131,7 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 
 	if resized {
 		diskPath := DiskPath(m.StoragePath, oldName)
-		out, err := exec.Command("qemu-img", "resize", diskPath, fmt.Sprintf("%dG", cfg.DiskSize)).CombinedOutput()
+		out, err := exec.Command(qemuImgBin, "resize", diskPath, fmt.Sprintf("%dG", cfg.DiskSize)).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("resize disk image: %w\n%s", err, out)
 		}
