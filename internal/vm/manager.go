@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
 	"sort"
 	"time"
 )
@@ -47,12 +46,25 @@ func (m *Manager) List() ([]*VMConfig, error) {
 	return cfgs, nil
 }
 
-// Create sets up the VM directory, creates the qcow2 disk, and writes vm.yaml.
+// Create sets up the VM directory, creates the qcow2 disk images, and writes
+// vm.yaml. If anything fails, a directory made here is removed again; one
+// that was already there is left alone.
 func (m *Manager) Create(cfg *VMConfig) error {
+	if err := ValidateDisks(cfg.Disks); err != nil {
+		return err
+	}
 	vmDir := VMDir(m.StoragePath, cfg.Name)
+	_, statErr := os.Stat(vmDir)
+	madeDir := os.IsNotExist(statErr)
 	if err := os.MkdirAll(vmDir, 0755); err != nil {
 		return fmt.Errorf("create VM directory: %w", err)
 	}
+	ok := false
+	defer func() {
+		if !ok && madeDir {
+			_ = os.RemoveAll(vmDir)
+		}
+	}()
 
 	if cfg.Network.MAC == "" {
 		cfg.Network.MAC = randomMAC()
@@ -78,33 +90,45 @@ func (m *Manager) Create(cfg *VMConfig) error {
 		}
 	}
 
-	diskPath := DiskPath(m.StoragePath, cfg.Name)
-	diskSizeStr := fmt.Sprintf("%dG", cfg.DiskSize)
-	out, err := exec.Command(qemuImgBin, "create", "-f", "qcow2", diskPath, diskSizeStr).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("create disk image: %w\n%s", err, out)
+	if err := createDiskImage(DiskPath(m.StoragePath, cfg.Name), cfg.DiskSize); err != nil {
+		return fmt.Errorf("create disk image: %w", err)
+	}
+	for _, d := range cfg.Disks {
+		if err := createDiskImage(ExtraDiskPath(m.StoragePath, cfg.Name, d.Name), d.Size); err != nil {
+			return fmt.Errorf("create disk %q: %w", d.Name, err)
+		}
 	}
 
 	if err := SaveConfig(m.StoragePath, cfg); err != nil {
 		return fmt.Errorf("save VM config: %w", err)
 	}
+	ok = true
 	return nil
 }
 
 // Update applies an edited config to the existing VM named oldName. It grows
-// the disk image, renames the VM directory and sets up UEFI NVRAM as needed,
-// then rewrites vm.yaml. Renaming, disk resizing and firmware changes require
-// the VM to be stopped; other changes to a running VM take effect the next
-// time it is started.
+// the disk images, creates and removes additional disks, renames the VM
+// directory and sets up UEFI NVRAM as needed, then rewrites vm.yaml.
+// Renaming, resizing or removing disks and firmware changes require the VM
+// to be stopped; a disk can be added to a running VM (the caller hot-plugs
+// it), and other changes take effect the next time it is started.
 func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 	old, err := LoadConfig(m.StoragePath, oldName)
 	if err != nil {
 		return fmt.Errorf("load VM config: %w", err)
 	}
+	if err := ValidateDisks(cfg.Disks); err != nil {
+		return err
+	}
+	disks, err := DiffDisks(old.Disks, cfg.Disks)
+	if err != nil {
+		return err
+	}
 
 	renamed := cfg.Name != oldName
 	resized := cfg.DiskSize != old.DiskSize
 	firmwareChanged := cfg.UEFI() != old.UEFI() || cfg.SecureBoot != old.SecureBoot
+	disksLocked := len(disks.Grown) > 0 || len(disks.Removed) > 0
 
 	if cfg.DiskSize < old.DiskSize {
 		return fmt.Errorf("disk can only grow (currently %d GiB) — shrinking would destroy data", old.DiskSize)
@@ -112,9 +136,12 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 	if renamed && m.Exists(cfg.Name) {
 		return fmt.Errorf("a VM named %q already exists", cfg.Name)
 	}
-	if renamed || resized || firmwareChanged {
+	if renamed || resized || firmwareChanged || disksLocked {
 		if info, err := Status(m.StoragePath, oldName); err == nil && info.Status == StatusRunning {
-			return fmt.Errorf("stop the VM before changing its name, disk size or firmware")
+			if renamed || resized || firmwareChanged {
+				return fmt.Errorf("stop the VM before changing its name, disk size or firmware")
+			}
+			return fmt.Errorf("stop the VM before resizing or removing disks (%s)", DiskNames(append(disks.Grown, disks.Removed...)))
 		}
 	}
 	if cfg.Network.MAC == "" {
@@ -129,19 +156,51 @@ func (m *Manager) Update(oldName string, cfg *VMConfig) error {
 		}
 	}
 
+	// Disk images change first, under the old name. A new image that is
+	// left behind by a later failure would block the next attempt, so the
+	// ones made here go again on failure; nothing is on them yet.
 	if resized {
-		diskPath := DiskPath(m.StoragePath, oldName)
-		out, err := exec.Command(qemuImgBin, "resize", diskPath, fmt.Sprintf("%dG", cfg.DiskSize)).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("resize disk image: %w\n%s", err, out)
+		if err := resizeDiskImage(DiskPath(m.StoragePath, oldName), cfg.DiskSize); err != nil {
+			return fmt.Errorf("resize disk image: %w", err)
+		}
+	}
+	var created []string
+	undo := func() {
+		for _, p := range created {
+			_ = os.Remove(p)
+		}
+	}
+	for _, d := range disks.Added {
+		path := ExtraDiskPath(m.StoragePath, oldName, d.Name)
+		if err := createDiskImage(path, d.Size); err != nil {
+			undo()
+			return fmt.Errorf("create disk %q: %w", d.Name, err)
+		}
+		created = append(created, path)
+	}
+	for _, d := range disks.Grown {
+		if err := resizeDiskImage(ExtraDiskPath(m.StoragePath, oldName, d.Name), d.Size); err != nil {
+			undo()
+			return fmt.Errorf("resize disk %q: %w", d.Name, err)
+		}
+	}
+	for _, d := range disks.Removed {
+		if err := os.Remove(ExtraDiskPath(m.StoragePath, oldName, d.Name)); err != nil && !os.IsNotExist(err) {
+			undo()
+			return fmt.Errorf("remove disk %q: %w", d.Name, err)
+		}
+	}
+	if resized || disks.Any() {
+		// Keep vm.yaml truthful about the images, whatever fails from here on.
+		old.DiskSize = cfg.DiskSize
+		old.Disks = cfg.Disks
+		if err := SaveConfig(m.StoragePath, old); err != nil {
+			return fmt.Errorf("save VM config: %w", err)
 		}
 	}
 
 	if renamed {
 		if err := os.Rename(VMDir(m.StoragePath, oldName), VMDir(m.StoragePath, cfg.Name)); err != nil {
-			// Keep vm.yaml truthful about the disk we may have just grown.
-			old.DiskSize = cfg.DiskSize
-			_ = SaveConfig(m.StoragePath, old)
 			return fmt.Errorf("rename VM directory: %w", err)
 		}
 	}

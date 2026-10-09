@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,19 +30,21 @@ func newTestVM(t *testing.T, mgr *Manager, cfg *VMConfig) {
 }
 
 // virtualSize returns the image's virtual size in bytes, per qemu-img info.
+// The top-level object is the image; newer qemu-img also nests its backing
+// file's info, with a virtual-size of its own, so the JSON is parsed properly.
 func virtualSize(t *testing.T, path string) string {
 	t.Helper()
 	out, err := exec.Command(qemuImgBin, "info", "--output=json", path).Output()
 	if err != nil {
 		t.Fatalf("qemu-img info %s: %v", path, err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, `"virtual-size"`) {
-			return strings.Trim(strings.TrimSpace(strings.SplitN(line, ":", 2)[1]), " ,")
-		}
+	var info struct {
+		VirtualSize int64 `json:"virtual-size"`
 	}
-	t.Fatalf("no virtual-size in %s", out)
-	return ""
+	if err := json.Unmarshal(out, &info); err != nil || info.VirtualSize == 0 {
+		t.Fatalf("no virtual-size in %s (%v)", out, err)
+	}
+	return strconv.FormatInt(info.VirtualSize, 10)
 }
 
 func TestCreateTemplateAndVMFromIt(t *testing.T) {

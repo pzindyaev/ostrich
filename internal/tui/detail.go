@@ -33,6 +33,7 @@ type consoleRefreshedMsg struct {
 	usb     []vm.USBState
 	cdrom   vm.ImageState // the boot ISO; meaningless when none is configured
 	images  []vm.ImageState
+	disks   []vm.ImageState // the additional disks' images
 }
 type detailActionErrMsg struct{ err error }
 type detailActionOKMsg struct{ action string }
@@ -48,6 +49,7 @@ type VMDetailModel struct {
 	usb          []vm.USBState
 	cdrom        vm.ImageState
 	images       []vm.ImageState
+	disks        []vm.ImageState
 	vp           viewport.Model
 	consoleLines []string
 	err          string
@@ -101,9 +103,10 @@ func (m *VMDetailModel) reloadConsole(follow bool) {
 }
 
 // consoleHeight is the viewport height that fits the terminal: every USB device
-// or image beyond the first adds a line to the info card.
+// or image beyond the first, and every additional disk, adds a line to the
+// info card.
 func consoleHeight(termHeight int, cfg *vm.VMConfig) int {
-	h := termHeight - detailChromeLines - max(0, len(cfg.USBDevices)-1) - max(0, len(cfg.USBImages)-1)
+	h := termHeight - detailChromeLines - max(0, len(cfg.USBDevices)-1) - max(0, len(cfg.USBImages)-1) - len(cfg.Disks)
 	if h < 5 {
 		h = 5
 	}
@@ -130,6 +133,7 @@ func (m VMDetailModel) Update(msg tea.Msg) (VMDetailModel, tea.Cmd) {
 		m.usb = msg.usb
 		m.cdrom = msg.cdrom
 		m.images = msg.images
+		m.disks = msg.disks
 		m.consoleLines = msg.lines
 		// Keep following the newest output unless the user has scrolled up.
 		m.reloadConsole(m.vp.AtBottom())
@@ -312,8 +316,8 @@ func (m VMDetailModel) View() string {
 	}
 
 	info := fmt.Sprintf(
-		"  Name:     %s\n  Status:   %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  IP:       %s\n  VNC:      %s\n  USB:      %s\n  USB ISO:  %s",
-		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.cfg.DiskSize,
+		"  Name:     %s\n  Status:   %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %s\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  IP:       %s\n  VNC:      %s\n  USB:      %s\n  USB ISO:  %s",
+		m.cfg.Name, statusLine, m.cfg.CPU, m.cfg.RAM, m.diskInfo(),
 		m.cdromInfo(), m.cfg.FirmwareLabel(), netInfo, ipInfo, vncInfo, m.usbInfo(), m.imageInfo(),
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
@@ -373,6 +377,24 @@ func (m VMDetailModel) usbInfo() string {
 			state = styleSuccess.Render("● connected")
 		}
 		lines = append(lines, fmt.Sprintf("%-*s  %s  %s", usbNameWidth, truncate(s.Device.Label(), usbNameWidth), s.Device.ID(), state))
+	}
+	return strings.Join(lines, "\n            ")
+}
+
+// diskInfo renders the main disk, then each additional disk on its own line:
+// its name, size and whether its image is still there on the host.
+func (m VMDetailModel) diskInfo() string {
+	lines := []string{fmt.Sprintf("%d GiB", m.cfg.DiskSize)}
+	states := m.disks
+	if len(states) != len(m.cfg.Disks) {
+		states = vm.DiskStates(m.storagePath, m.cfg) // not refreshed yet
+	}
+	for i, d := range m.cfg.Disks {
+		state := imageState(states[i])
+		if states[i].Err == nil {
+			state = styleSuccess.Render("● " + humanSize(states[i].Size) + " on host")
+		}
+		lines = append(lines, fmt.Sprintf("%-20s  %3d GiB  %s", d.Name, d.Size, state))
 	}
 	return strings.Join(lines, "\n            ")
 }
@@ -465,6 +487,7 @@ func refreshConsoleCmd(storagePath string, cfg *vm.VMConfig) tea.Cmd {
 			usb:    vm.USBStates(cfg.USBDevices),
 			cdrom:  vm.ImageStateOf(cfg.CDROMPath),
 			images: vm.USBImageStates(cfg.USBImages),
+			disks:  vm.DiskStates(storagePath, cfg),
 		}
 	}
 }

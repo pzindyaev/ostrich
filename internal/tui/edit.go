@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,6 +20,7 @@ const (
 	editCPU
 	editRAM
 	editDisk
+	editDisks
 	editISO
 	editFirmware // selector
 	editTPM      // selector
@@ -35,6 +37,7 @@ var editLabels = [editFieldCount]string{
 	"CPU Cores",
 	"RAM (MiB)",
 	"Disk Size (GiB)",
+	"Extra Disks",
 	"Boot ISO",
 	"Firmware",
 	"TPM 2.0",
@@ -50,6 +53,7 @@ var editHelp = [editFieldCount]string{
 	"Number of virtual CPU cores, e.g. 2",
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Can only grow, and the VM must be stopped. The guest must extend its own partitions",
+	"Comma-separated [name:]size in GiB, e.g. data:50, scratch:10. A new disk is hot-plugged into a running VM and arrives blank: partition and format it in the guest. Grow or remove only when stopped; removing deletes the image",
 	"Full path to an ISO image to boot from, or leave blank to boot from disk; a running VM gets the new disc right away",
 	"h/l/←/→ to select. VM must be stopped; turning Secure Boot on rebuilds the UEFI NVRAM (boot entries)",
 	"h/l/←/→ to select. Emulated TPM 2.0 via swtpm — required by Windows 11",
@@ -82,10 +86,15 @@ type EditVMModel struct {
 	tpmIdx  int
 	netIdx  int
 	running bool
-	err     string
-	mgr     *vm.Manager
-	width   int
-	height  int
+	// Removing a disk deletes its image, so the first save with removals only
+	// arms the warning; a second save with the field unchanged confirms it.
+	armed      bool
+	armedValue string
+	warn       string
+	err        string
+	mgr        *vm.Manager
+	width      int
+	height     int
 }
 
 // NewEditVMModel builds an EditVMModel pre-filled from cfg.
@@ -95,6 +104,7 @@ func NewEditVMModel(mgr *vm.Manager, cfg *vm.VMConfig, width, height int) EditVM
 		editCPU:      strconv.Itoa(cfg.CPU),
 		editRAM:      strconv.Itoa(cfg.RAM),
 		editDisk:     strconv.Itoa(cfg.DiskSize),
+		editDisks:    vm.FormatDisks(cfg.Disks),
 		editISO:      cfg.CDROMPath,
 		editMAC:      cfg.Network.MAC,
 		editForwards: vm.FormatPortForwards(cfg.Network.PortForwards),
@@ -207,6 +217,10 @@ func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
 	if m.field.isText() {
 		var cmd tea.Cmd
 		m.inputs[m.field], cmd = m.inputs[m.field].Update(msg)
+		if m.armed && m.value(editDisks) != m.armedValue {
+			// The removal being confirmed is not the one on screen any more.
+			m.armed, m.armedValue, m.warn = false, "", ""
+		}
 		return m, cmd
 	}
 	return m, nil
@@ -285,6 +299,17 @@ func (m EditVMModel) buildConfig() (*vm.VMConfig, editField, error) {
 		return nil, editDisk, fmt.Errorf("stop the VM before resizing its disk")
 	}
 
+	if cfg.Disks, err = vm.ParseDisks(m.value(editDisks)); err != nil {
+		return nil, editDisks, err
+	}
+	disks, err := vm.DiffDisks(m.orig.Disks, cfg.Disks)
+	if err != nil {
+		return nil, editDisks, err
+	}
+	if m.running && (len(disks.Grown) > 0 || len(disks.Removed) > 0) {
+		return nil, editDisks, fmt.Errorf("stop the VM before resizing or removing disks")
+	}
+
 	cfg.CDROMPath = m.value(editISO)
 	if cfg.CDROMPath != "" {
 		if st, err := os.Stat(cfg.CDROMPath); err != nil || st.IsDir() {
@@ -325,23 +350,67 @@ func (m EditVMModel) save() (EditVMModel, tea.Cmd) {
 		return m, cmd
 	}
 	m.err = ""
+
+	// Removing a disk deletes its image for good, so it takes a second save
+	// with the same field value to confirm. buildConfig validated the diff.
+	disks, _ := vm.DiffDisks(m.orig.Disks, cfg.Disks)
+	if len(disks.Removed) > 0 && !(m.armed && m.value(editDisks) == m.armedValue) {
+		m.armed, m.armedValue = true, m.value(editDisks)
+		m.warn = fmt.Sprintf("Removing %s deletes the image files and everything on them — press Ctrl-s again to confirm",
+			describeDisks(disks.Removed))
+		return m.moveTo(editDisks)
+	}
+	m.armed, m.armedValue, m.warn = false, "", ""
+
 	oldName := m.orig.Name
 	swapISO := m.running && cfg.CDROMPath != m.orig.CDROMPath
+	// A disk added to a running VM is hot-plugged once its image exists.
+	var hotplug []int
+	if m.running {
+		added := map[string]bool{}
+		for _, d := range disks.Added {
+			added[d.Name] = true
+		}
+		for i, d := range cfg.Disks {
+			if added[d.Name] {
+				hotplug = append(hotplug, i)
+			}
+		}
+	}
 	storagePath := m.mgr.StoragePath
 	return m, func() tea.Msg {
 		if err := m.mgr.Update(oldName, cfg); err != nil {
 			return vmUpdateErrMsg{err}
 		}
-		// The boot ISO is the one thing that can change under a running VM:
-		// the CD-ROM drive takes the new disc (or none) on the spot.
+		// What can change under a running VM goes through the monitor on the
+		// spot: the CD-ROM drive takes the new disc (or none), new disks are
+		// plugged in. The config is saved either way.
+		var errs []error
 		if swapISO {
 			if err := vm.CDROMChange(storagePath, cfg.Name, cfg.CDROMPath); err != nil {
-				return vmUpdateErrMsg{fmt.Errorf(
-					"saved, but the running VM's CD-ROM drive could not be changed (takes effect on next start):\n%w", err)}
+				errs = append(errs, fmt.Errorf("the CD-ROM drive could not be changed:\n%w", err))
 			}
+		}
+		for _, i := range hotplug {
+			if err := vm.DiskHotplug(storagePath, cfg, i); err != nil {
+				errs = append(errs, fmt.Errorf("disk %q could not be hot-plugged:\n%w", cfg.Disks[i].Name, err))
+			}
+		}
+		if len(errs) > 0 {
+			return vmUpdateErrMsg{fmt.Errorf(
+				"saved, but this could not be applied to the running VM (takes effect on next start):\n%w", errors.Join(errs...))}
 		}
 		return vmUpdatedMsg{name: cfg.Name}
 	}
+}
+
+// describeDisks lists disks as "data (50 GiB), scratch (10 GiB)".
+func describeDisks(disks []vm.Disk) string {
+	parts := make([]string, len(disks))
+	for i, d := range disks {
+		parts[i] = fmt.Sprintf("%s (%d GiB)", d.Name, d.Size)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (m EditVMModel) View() string {
@@ -357,7 +426,7 @@ func (m EditVMModel) View() string {
 
 	if m.running {
 		b.WriteString(styleRunning.Render("  ● running"))
-		b.WriteString(styleHelp.Render(" — changes take effect on next start; name, disk size and firmware are locked"))
+		b.WriteString(styleHelp.Render(" — changes take effect on next start; name, disk sizes, disk removal and firmware are locked; new disks are hot-plugged"))
 		b.WriteString("\n\n")
 	}
 
@@ -395,6 +464,10 @@ func (m EditVMModel) View() string {
 	b.WriteString(styleHelp.Render("  " + editHelp[m.field]))
 	b.WriteString("\n\n")
 
+	if m.warn != "" {
+		b.WriteString(styleWarning.Render("  ⚠ " + m.warn))
+		b.WriteString("\n\n")
+	}
 	if m.err != "" {
 		b.WriteString(styleError.Render("  ✗ " + m.err))
 		b.WriteString("\n\n")

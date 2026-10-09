@@ -18,11 +18,12 @@ const (
 	stepCPU                        // text input 1
 	stepRAM                        // text input 2
 	stepDisk                       // text input 3
-	stepISO                        // text input 4
+	stepDisks                      // text input 4
+	stepISO                        // text input 5
 	stepFirmware                   // selector
 	stepTPM                        // selector
 	stepNetwork                    // selector (no text input)
-	stepVNC                        // text input 5
+	stepVNC                        // text input 6
 	stepConfirm                    // confirmation
 	stepCount
 )
@@ -32,6 +33,7 @@ var stepLabels = []string{
 	"CPU Cores",
 	"RAM (MiB)",
 	"Disk Size (GiB)",
+	"Additional disks (optional — leave blank for none)",
 	"Boot ISO path (optional — leave blank to skip)",
 	"Firmware",
 	"TPM 2.0",
@@ -45,6 +47,7 @@ var stepHelp = []string{
 	"Number of virtual CPU cores, e.g. 2",
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Disk size in GiB, e.g. 20",
+	"Comma-separated [name:]size in GiB, e.g. data:50, 100. Each arrives blank in the guest as /dev/disk/by-id/virtio-<name>: partition and format it there",
 	"Full path to an ISO image for initial install, or leave blank",
 	"h/l/←/→ to select. Windows 11 needs UEFI + Secure Boot and a TPM (next step); Linux boots with any",
 	"h/l/←/→ to select. Emulated by swtpm on the host — required by Windows 11",
@@ -130,10 +133,12 @@ func inputForStep(s createStep) int {
 		return 2
 	case stepDisk:
 		return 3
-	case stepISO:
+	case stepDisks:
 		return 4
-	case stepVNC:
+	case stepISO:
 		return 5
+	case stepVNC:
+		return 6
 	default:
 		return -1
 	}
@@ -146,7 +151,7 @@ type vmCreateErrMsg struct{ err error }
 // CreateVMModel is a linear multi-step form for defining a new VM.
 type CreateVMModel struct {
 	step   createStep
-	inputs [6]textinput.Model // name, cpu, ram, disk, iso, vnc
+	inputs [7]textinput.Model // name, cpu, ram, disk, disks, iso, vnc
 	fwIdx  int
 	tpmIdx int
 	netIdx int
@@ -158,9 +163,9 @@ type CreateVMModel struct {
 
 // NewCreateVMModel builds a CreateVMModel with sensible defaults.
 func NewCreateVMModel(mgr *vm.Manager, width, height int) CreateVMModel {
-	defaults := []string{"my-vm", "2", "2048", "20", "", "0"}
+	defaults := []string{"my-vm", "2", "2048", "20", "", "", "0"}
 
-	var inputs [6]textinput.Model
+	var inputs [7]textinput.Model
 	for i := range inputs {
 		t := textinput.New()
 		t.SetValue(defaults[i])
@@ -326,6 +331,10 @@ func (m CreateVMModel) validateStep(s createStep) error {
 		if err != nil || v < 1 {
 			return fmt.Errorf("disk size must be at least 1 GiB")
 		}
+	case stepDisks:
+		if _, err := vm.ParseDisks(val); err != nil {
+			return err
+		}
 	case stepVNC:
 		v, err := strconv.Atoi(val)
 		if err != nil || v < 0 || v > 99 {
@@ -349,6 +358,10 @@ func (m CreateVMModel) buildConfig() (*vm.VMConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid disk size")
 	}
+	disks, err := vm.ParseDisks(m.inputs[inputForStep(stepDisks)].Value())
+	if err != nil {
+		return nil, err
+	}
 	iso := strings.TrimSpace(m.inputs[inputForStep(stepISO)].Value())
 	vnc, _ := strconv.Atoi(strings.TrimSpace(m.inputs[inputForStep(stepVNC)].Value()))
 	netType := networkChoices[m.netIdx]
@@ -359,6 +372,7 @@ func (m CreateVMModel) buildConfig() (*vm.VMConfig, error) {
 		CPU:        cpu,
 		RAM:        ram,
 		DiskSize:   disk,
+		Disks:      disks,
 		CDROMPath:  iso,
 		Firmware:   fw.firmware,
 		SecureBoot: fw.secureBoot,
@@ -423,8 +437,9 @@ func (m CreateVMModel) View() string {
 				vncStr = fmt.Sprintf("display %d (port %d)", cfg.VNCPort, 5900+cfg.VNCPort)
 			}
 			summary := fmt.Sprintf(
-				"  Name:     %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  VNC:      %s",
+				"  Name:     %s\n  CPU:      %d cores\n  RAM:      %d MiB\n  Disk:     %d GiB\n  Disks:    %s\n  ISO:      %s\n  Firmware: %s\n  Net:      %s\n  VNC:      %s",
 				cfg.Name, cfg.CPU, cfg.RAM, cfg.DiskSize,
+				ifEmpty(vm.FormatDisks(cfg.Disks), "(none)"),
 				ifEmpty(cfg.CDROMPath, "(none)"),
 				cfg.FirmwareLabel(),
 				cfg.Network.Type,

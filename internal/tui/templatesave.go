@@ -257,7 +257,7 @@ func (m SaveTemplateModel) View() string {
 	)
 	b.WriteString(styleBox.Copy().Width(m.width - 2).Render(info))
 	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("  Left out, as they belong to one VM: MAC address, port forwards, VNC display, boot ISO, USB devices and images."))
+	b.WriteString(styleHelp.Render("  Left out, as they belong to one VM: MAC address, port forwards, VNC display, boot ISO, USB devices and images, additional disks."))
 	b.WriteString("\n\n")
 
 	for f := saveTplField(0); f < saveTplFieldCount; f++ {

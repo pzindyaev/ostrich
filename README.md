@@ -16,13 +16,14 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 
 ## Features
 
-- **Create VMs** — guided multi-step form for CPU, RAM, disk, networking, and VNC
+- **Create VMs** — guided multi-step form for CPU, RAM, disks, networking, and VNC
 - **Start / stop VMs** — QEMU processes are detached and survive TUI exit
 - **Live console view** — serial console output streamed in the detail screen, auto-refreshed every 2 seconds
 - **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
 - **ISO hot-plug** — press `i` to swap or eject the boot ISO in a running VM's CD-ROM drive, and to attach ISOs (or any raw disk image) as read-only USB drives; applied in the running guest on the spot, at boot otherwise
+- **Multiple disks** — give a VM additional virtio disks when creating it or later in the edit form; a disk added to a running VM is hot-plugged on the spot — see [Additional Disks](#additional-disks)
 - **VM templates** — press `t` to freeze a stopped VM (disk, UEFI NVRAM, TPM state) as a template; `T` lists the templates, and new VMs are made from one with their own name, CPU, RAM and network — see [Templates](#templates)
 - **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
 - **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
@@ -159,7 +160,7 @@ Shows configuration, running state and a scrollable view of the serial console o
 
 ### Create VM form
 
-A linear 10-step wizard. Text input fields accept free typing; the selectors (firmware, TPM, network) use `h/l` or arrow keys.
+A linear 11-step wizard. Text input fields accept free typing; the selectors (firmware, TPM, network) use `h/l` or arrow keys.
 
 | Step | Field | Notes |
 |------|-------|-------|
@@ -167,18 +168,19 @@ A linear 10-step wizard. Text input fields accept free typing; the selectors (fi
 | 2 | CPU Cores | Positive integer, e.g. `2` |
 | 3 | RAM (MiB) | Minimum 64, e.g. `2048` for 2 GiB |
 | 4 | Disk Size (GiB) | Minimum 1, e.g. `20` |
-| 5 | Boot ISO | Full path to an `.iso` file, or leave blank |
-| 6 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot` — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20) |
-| 7 | TPM 2.0 | `disabled` · `enabled` (needs `swtpm`) |
-| 8 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
-| 9 | VNC Display Number | `0` to disable; `1`–`99` enables VNC on TCP port `5900+N` |
-| 10 | Confirm | Review and submit |
+| 5 | Additional disks | Optional. Comma-separated `[name:]size` in GiB, e.g. `data:50, 100` — see [Additional Disks](#additional-disks) |
+| 6 | Boot ISO | Full path to an `.iso` file, or leave blank |
+| 7 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot` — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20) |
+| 8 | TPM 2.0 | `disabled` · `enabled` (needs `swtpm`) |
+| 9 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
+| 10 | VNC Display Number | `0` to disable; `1`–`99` enables VNC on TCP port `5900+N` |
+| 11 | Confirm | Review and submit |
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `Enter` / `j` / `↓` | Next field |
 | `Shift-Tab` / `k` / `↑` | Previous field |
-| `h` / `l` / `←` / `→` | Cycle a selector (steps 6–8) |
+| `h` / `l` / `←` / `→` | Cycle a selector (steps 7–9) |
 | `Esc` | Cancel and return to VM list |
 
 ### Edit VM form
@@ -190,6 +192,7 @@ Press `e` on the list or detail screen to edit an existing VM. All properties ar
 | Name | Renames the VM directory; VM must be stopped |
 | CPU Cores / RAM (MiB) | Same rules as the create form |
 | Disk Size (GiB) | Can only grow (`qemu-img resize`); VM must be stopped. The guest still has to extend its own partitions/filesystem |
+| Extra Disks | Comma-separated `name:size` in GiB, e.g. `data:50, scratch:10`. A new disk is created and, on a running VM, hot-plugged right away; it arrives blank, so partition and format it in the guest. Growing or removing one needs the VM stopped. Removing a disk **deletes its image** once a second `Ctrl-s` confirms — see [Additional Disks](#additional-disks) |
 | Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation). A running VM gets the new disc right away |
 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot`; VM must be stopped. Turning Secure Boot on rebuilds the VM's UEFI NVRAM |
 | TPM 2.0 | `disabled` · `enabled`; needs `swtpm` on the host |
@@ -198,7 +201,7 @@ Press `e` on the list or detail screen to edit an existing VM. All properties ar
 | Port Forwards | `user` mode only. Comma-separated `[tcp\|udp:]host:guest`, e.g. `2222:22, udp:5353:53` |
 | VNC Display | `0` to disable; `1`–`99` |
 
-Changes to a running VM are saved but only take effect the next time it is started.
+Changes to a running VM are saved but only take effect the next time it is started, except the boot ISO and newly added disks, which are applied in the guest right away.
 
 | Key | Action |
 |-----|--------|
@@ -302,7 +305,7 @@ Press `t` on the list or detail screen. **The VM must be stopped** — shut it d
   │   Firmware: UEFI, TPM 2.0 — with the UEFI NVRAM (boot entries) and the TPM state     │
   │   Defaults: 2 cores, 2048 MiB RAM, user network — chosen anew for each VM made from it│
   ╰──────────────────────────────────────────────────────────────────────────────────────╯
-  Left out, as they belong to one VM: MAC address, port forwards, VNC display, boot ISO, USB devices and images.
+  Left out, as they belong to one VM: MAC address, port forwards, VNC display, boot ISO, USB devices and images, additional disks.
 
   ▸ Template name    debian-12-base
     Description      Debian 12 with docker and my dotfiles
@@ -335,6 +338,7 @@ What a template carries, and what it does not:
 | TPM state — so BitLocker and Windows Hello still work | VNC display number (two VMs cannot share a port; a new VM gets a free one if the source had VNC) |
 | Architecture, firmware, Secure Boot, TPM | Boot ISO (a clone would run the installer again) |
 | CPU, RAM and network type, as defaults | USB devices and USB images |
+| | Additional disks (they hold one VM's data, not the installed system) |
 
 #### Templates screen
 
@@ -410,7 +414,8 @@ The keys are those of the [create form](#create-vm-form). The new VM gets a fres
 ~/VMs/                          ← configured on first run
 ├── debian-12/
 │   ├── vm.yaml                 ← VM configuration (human-editable)
-│   ├── disk.qcow2              ← QEMU qcow2 disk image
+│   ├── disk.qcow2              ← QEMU qcow2 disk image (the main disk)
+│   ├── data.qcow2              ← an additional disk named "data" — see Additional Disks
 │   ├── efivars.fd              ← UEFI NVRAM: boot entries, Secure Boot keys (UEFI VMs only)
 │   ├── tpm/                    ← emulated TPM state (TPM VMs only)
 │   ├── swtpm.sock, swtpm.pid, swtpm.log   ← TPM emulator (while running)
@@ -444,6 +449,9 @@ name: debian-12
 cpu: 2
 ram: 2048        # MiB
 disk_size: 20    # GiB (informational; actual size lives in disk.qcow2)
+disks:           # additional virtio disks — see Additional Disks
+  - name: data   # <vm-dir>/data.qcow2; /dev/disk/by-id/virtio-data in the guest
+    size: 50     # GiB
 arch: x86_64
 cdrom_path: /home/user/iso/debian-12.iso   # the CD-ROM drive; omit (or eject with i, e) after install
 firmware: uefi      # bios (default) | uefi — see UEFI, Secure Boot and TPM 2.0
@@ -556,6 +564,51 @@ sleep 20; grep -i 52:54:00:00:00:01 /proc/net/arp; kill %1
 ```
 
 To undo: `sudo nmcli con delete br0`, remove the `allow br0` line, and `sudo ufw status numbered` / `sudo ufw delete <n>` for the rules.
+
+## Additional Disks
+
+Besides its main disk (`disk.qcow2`, `disk_size`), a VM can have up to 8 additional virtio disks: a data volume for Windows, a separate disk for a database, something to try LVM or RAID on. They are entered as a comma-separated list of `[name:]size` entries, sizes in GiB, in the create wizard's **Additional disks** step and the edit form's **Extra Disks** field. An entry without a name gets the lowest free `disk1`, `disk2`, …, so `data:50, 100` makes `data` (50 GiB) and `disk1` (100 GiB). Names are letters, digits, hyphens and underscores, start with a letter and are at most 20 characters; `disk` is taken by the main disk.
+
+Each disk is a qcow2 image named after it in the VM folder (`data.qcow2`) and listed in `vm.yaml`:
+
+```yaml
+disks:
+  - name: data
+    size: 50
+  - name: disk1
+    size: 100
+```
+
+What the edit form does with a change to the list:
+
+| Change | Stopped VM | Running VM |
+|---|---|---|
+| Add a disk | Image created, attached at the next start | Image created and hot-plugged into the guest on the spot |
+| Grow a disk | `qemu-img resize`; the guest extends its own partitions | Refused — stop the VM first |
+| Remove a disk | **Deletes the image.** The first Ctrl-s warns, naming the disks and sizes; the second confirms | Refused — stop the VM first |
+
+Shrinking is refused, as for the main disk. Renaming a disk is a removal plus an addition: the old image is deleted (after the confirmation) and an empty one made under the new name.
+
+In the guest each disk is a virtio-blk device whose serial is the disk's name, so it is `/dev/disk/by-id/virtio-data` whatever letter the kernel gives it (`/dev/vdb`, `/dev/vdc`, … in the order of the list; the main disk stays `/dev/vda`). Windows uses the same `viostor` driver as for the main disk.
+
+A new disk arrives blank, without a partition table, so nothing shows it until it is partitioned and formatted in the guest. On Windows open Disk Management (`diskmgmt.msc`): the new disk is listed as *Not Initialized*; initialize it as GPT, then create a volume on the unallocated space and it gets a drive letter. On Linux partition it with `fdisk` or `parted` and make a filesystem with `mkfs`, or hand it to the installer's partitioner.
+
+QEMU is started with:
+
+```
+-device pcie-root-port,id=disk-rp1,bus=pcie.0,chassis=1,addr=0x10
+… through disk-rp8, chassis=8, addr=0x17
+-drive if=none,id=disk-data-drive,format=qcow2,file=~/VMs/debian-12/data.qcow2
+-device virtio-blk-pci,id=disk-data,drive=disk-data-drive,bus=disk-rp1,serial=data
+```
+
+Every VM gets the eight PCIe root ports whether it has extra disks or not, like the xHCI controller: the PCIe root bus does not take hot-plugged devices, a root port does, so a disk added while the VM runs goes onto the port its position in the list names (`drive_add`, then `device_add` over the monitor). The ports are pinned to high slots so the devices QEMU places by itself — the main disk, the xHCI controller, the network card — keep the PCI addresses they have always had; OVMF boot entries record the disk's address, and existing UEFI VMs keep booting unchanged. A VM started by an older Ostrich has no ports yet, so hot-plug fails until it is restarted; the disk is created and saved either way and attached at the next start.
+
+Notes:
+
+- The boot order is untouched: SeaBIOS tries the main disk first and skips a disk without a boot sector; OVMF boots its NVRAM entries or a disk with an EFI system partition. A BIOS VM whose main disk is not bootable may fall through to a data disk.
+- Templates carry the main disk only; make a VM from a template, then add disks in the edit form.
+- Deleting a VM deletes all of its disks.
 
 ## UEFI, Secure Boot and TPM 2.0
 
@@ -752,6 +805,7 @@ ostrich/
     │   ├── manager.go       # list / create / delete VMs, qemu-img wrapper
     │   ├── process.go       # start / stop / status, console log reader
     │   ├── cdrom.go         # the CD-ROM drive holding the boot ISO, hot-swap
+    │   ├── disk.go          # additional disks: config, images, QEMU args, hot-plug
     │   ├── usb.go           # host USB enumeration (sysfs), passthrough config, hot-plug
     │   ├── usbimage.go      # disk images attached as USB drives (ISO hot-plug)
     │   └── monitor.go       # HMP monitor socket client

@@ -108,6 +108,7 @@ type VMConfig struct {
 	VNCPort    int           `yaml:"vnc_port,omitempty"`    // VNC display number (TCP port = 5900+n); 0 = disabled
 	USBDevices []USBDevice   `yaml:"usb_devices,omitempty"` // host USB devices passed through to the guest
 	USBImages  []USBImage    `yaml:"usb_images,omitempty"`  // disk images attached as read-only USB drives (ISO hot-plug)
+	Disks      []Disk        `yaml:"disks,omitempty"`       // additional virtio disks, next to the main one (see disk.go)
 	CreatedAt  time.Time     `yaml:"created_at"`
 }
 
@@ -139,9 +140,15 @@ func VMDir(storagePath, name string) string {
 	return filepath.Join(storagePath, name)
 }
 
-// DiskPath returns the qcow2 disk image path.
+// DiskPath returns the main qcow2 disk image path.
 func DiskPath(storagePath, name string) string {
-	return filepath.Join(VMDir(storagePath, name), "disk.qcow2")
+	return filepath.Join(VMDir(storagePath, name), primaryDiskName+".qcow2")
+}
+
+// ExtraDiskPath returns the qcow2 image path of one of the VM's additional
+// disks, named after the disk.
+func ExtraDiskPath(storagePath, vmName, diskName string) string {
+	return filepath.Join(VMDir(storagePath, vmName), diskName+".qcow2")
 }
 
 // ConfigFilePath returns the vm.yaml path.

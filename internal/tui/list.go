@@ -251,8 +251,12 @@ func (m VMListModel) View() string {
 				statusBadge = styleRunning.Render("● running")
 			}
 
-			line := fmt.Sprintf("%-20s  %s   CPU: %d  RAM: %d MiB  Disk: %d GiB",
-				cfg.Name, statusBadge, cfg.CPU, cfg.RAM, cfg.DiskSize)
+			extra := ""
+			if n := len(cfg.Disks); n > 0 {
+				extra = fmt.Sprintf(" +%d", n)
+			}
+			line := fmt.Sprintf("%-20s  %s   CPU: %d  RAM: %d MiB  Disk: %d GiB%s",
+				cfg.Name, statusBadge, cfg.CPU, cfg.RAM, cfg.DiskSize, extra)
 
 			if i == m.cursor {
 				b.WriteString(styleSelected.Copy().Width(m.width - 2).Render("  " + line))

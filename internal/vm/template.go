@@ -25,7 +25,8 @@ const templatesDirName = ".templates"
 // resource defaults a new VM starts from and the firmware the installed OS
 // expects. Anything bound to one VM or to the host — MAC address, port
 // forwards, VNC display, boot ISO, USB devices and images — is left out, as
-// clones would clash over it or boot the installer again.
+// clones would clash over it or boot the installer again; so are additional
+// disks, which hold one VM's data rather than the installed system.
 type Template struct {
 	Name        string       `yaml:"name"`
 	Description string       `yaml:"description,omitempty"`
@@ -268,6 +269,7 @@ func (m *Manager) CreateFromTemplate(tplName string, cfg *VMConfig) error {
 	}
 
 	cfg.DiskSize = t.DiskSize
+	cfg.Disks = nil // the template carries the main disk only
 	cfg.Arch = t.Arch
 	cfg.Firmware = t.Firmware
 	cfg.SecureBoot = t.SecureBoot

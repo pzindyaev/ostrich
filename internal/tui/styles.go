@@ -6,6 +6,7 @@ var (
 	colorPrimary = lipgloss.Color("#7C3AED") // purple
 	colorAccent  = lipgloss.Color("#10B981") // green
 	colorDanger  = lipgloss.Color("#EF4444") // red
+	colorWarning = lipgloss.Color("#F59E0B") // amber
 	colorMuted   = lipgloss.Color("#6B7280") // gray
 	colorText    = lipgloss.Color("#F3F4F6") // near-white
 
@@ -31,6 +32,9 @@ var (
 
 	styleError = lipgloss.NewStyle().
 			Foreground(colorDanger)
+
+	styleWarning = lipgloss.NewStyle().
+			Foreground(colorWarning)
 
 	styleSuccess = lipgloss.NewStyle().
 			Foreground(colorAccent)

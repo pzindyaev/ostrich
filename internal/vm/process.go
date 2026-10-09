@@ -47,6 +47,9 @@ const (
 func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) {
 	arch := archOf(cfg)
 	bin := fmt.Sprintf("qemu-system-%s", arch)
+	if err := ValidateDisks(cfg.Disks); err != nil {
+		return "", nil, err
+	}
 
 	diskPath := DiskPath(storagePath, cfg.Name)
 	consolePath := ConsolePath(storagePath, cfg.Name)
@@ -90,8 +93,11 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) 
 		"-machine", machineOpts,
 	}
 	args = append(args, firmwareArgs...)
+	args = append(args, "-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", diskPath))
+	// Additional disks, each on its own PCIe root port; the ports are always
+	// there so a disk can be hot-plugged into a running VM.
+	args = append(args, extraDiskArgs(cfg, storagePath)...)
 	args = append(args,
-		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", diskPath),
 		"-chardev", serialChardev,
 		"-serial", "chardev:serial0",
 		"-monitor", fmt.Sprintf("unix:%s,server,nowait", monitorPath),
@@ -201,6 +207,9 @@ func Start(storagePath string, cfg *VMConfig) error {
 		}
 	}
 	if err := CheckUSBImages(cfg.USBImages); err != nil {
+		return err
+	}
+	if err := CheckExtraDisks(storagePath, cfg); err != nil {
 		return err
 	}
 

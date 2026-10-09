@@ -23,22 +23,48 @@ func fakeHMP(t *testing.T, sock string, reply func(cmd string) string) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		conn.Write([]byte("QEMU 9.2.0 monitor - type 'help' for more information\r\n(qemu) "))
-		line, err := bufio.NewReader(conn).ReadString('\n')
-		if err != nil {
-			return
-		}
-		cmd := strings.TrimRight(line, "\n")
-		var echo strings.Builder
-		for i := range cmd {
-			echo.WriteString(strings.Repeat("\x1b[D", i))
-			echo.WriteString(cmd[:i+1])
-			echo.WriteString("\x1b[K")
-		}
-		echo.WriteString("\r\n")
-		conn.Write([]byte(echo.String() + reply(cmd) + "(qemu) "))
+		serveHMPSession(conn, reply)
 	}()
+}
+
+// fakeHMPSessions is fakeHMP for a client that reconnects per command, as
+// MonitorCommand does: it serves one session after another until the test ends.
+func fakeHMPSessions(t *testing.T, sock string, reply func(cmd string) string) {
+	t.Helper()
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			serveHMPSession(conn, reply)
+		}
+	}()
+}
+
+// serveHMPSession answers one command on conn the way QEMU's readline HMP
+// does, then closes it.
+func serveHMPSession(conn net.Conn, reply func(cmd string) string) {
+	defer conn.Close()
+	conn.Write([]byte("QEMU 9.2.0 monitor - type 'help' for more information\r\n(qemu) "))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return
+	}
+	cmd := strings.TrimRight(line, "\n")
+	var echo strings.Builder
+	for i := range cmd {
+		echo.WriteString(strings.Repeat("\x1b[D", i))
+		echo.WriteString(cmd[:i+1])
+		echo.WriteString("\x1b[K")
+	}
+	echo.WriteString("\r\n")
+	conn.Write([]byte(echo.String() + reply(cmd) + "(qemu) "))
 }
 
 func TestHMPCommand(t *testing.T) {
