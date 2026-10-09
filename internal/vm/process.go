@@ -180,7 +180,7 @@ func BuildQEMUArgs(cfg *VMConfig, storagePath string) (string, []string, error) 
 		// The bridge backend creates the tap through the setuid qemu-bridge-helper,
 		// so no root is needed (plain "tap" would open /dev/net/tun itself).
 		args = append(args,
-			"-netdev", "bridge,id=net0,br=br0",
+			"-netdev", "bridge,id=net0,br="+BridgeName,
 			"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MAC),
 		)
 	}
@@ -223,6 +223,13 @@ func Start(storagePath string, cfg *VMConfig) error {
 	}
 	if err := CheckExtraDisks(storagePath, cfg); err != nil {
 		return err
+	}
+	// The bridge helper's "access denied by acl file" names neither the
+	// bridge nor the fix; this does.
+	if cfg.Network.Type == NetworkTap {
+		if err := CheckBridge(BridgeName); err != nil {
+			return err
+		}
 	}
 
 	// A VM whose vm.yaml was switched to UEFI by hand has no NVRAM yet.

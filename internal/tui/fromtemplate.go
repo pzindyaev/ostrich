@@ -67,8 +67,9 @@ type FromTemplateModel struct {
 	step       tplStep
 	inputs     [4]textinput.Model // name, cpu, ram, forwards
 	netIdx     int
-	vncDisplay int  // the display the new VM gets when the template has VNC
-	busy       bool // the copy is in flight
+	bridgeHint string // what the host lacks for tap networking; "" when ready or not picked
+	vncDisplay int    // the display the new VM gets when the template has VNC
+	busy       bool   // the copy is in flight
 	spin       spinner.Model
 	err        string
 	width      int
@@ -97,14 +98,15 @@ func NewFromTemplateModel(mgr *vm.Manager, tpl *vm.Template, width, height int) 
 	}
 
 	m := FromTemplateModel{
-		tpl:    tpl,
-		mgr:    mgr,
-		step:   tplStepName,
-		inputs: inputs,
-		netIdx: netIdx,
-		spin:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styleLabel)),
-		width:  width,
-		height: height,
+		tpl:        tpl,
+		mgr:        mgr,
+		step:       tplStepName,
+		inputs:     inputs,
+		netIdx:     netIdx,
+		bridgeHint: bridgeHintFor(networkChoices[netIdx]),
+		spin:       spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styleLabel)),
+		width:      width,
+		height:     height,
 	}
 	if tpl.VNC {
 		m.vncDisplay = mgr.FreeVNCDisplay()
@@ -189,11 +191,13 @@ func (m FromTemplateModel) handleKey(msg tea.KeyMsg) (FromTemplateModel, tea.Cmd
 	case "h", "left":
 		if m.step == tplStepNetwork {
 			m.netIdx = wrap(m.netIdx-1, len(networkChoices))
+			m.bridgeHint = bridgeHintFor(networkChoices[m.netIdx])
 		}
 
 	case "l", "right":
 		if m.step == tplStepNetwork {
 			m.netIdx = wrap(m.netIdx+1, len(networkChoices))
+			m.bridgeHint = bridgeHintFor(networkChoices[m.netIdx])
 		}
 	}
 
@@ -337,6 +341,9 @@ func (m FromTemplateModel) View() string {
 	switch m.step {
 	case tplStepNetwork:
 		b.WriteString("  " + renderChoices(networkLabels, m.netIdx) + "\n\n")
+		if m.bridgeHint != "" {
+			b.WriteString(renderBridgeHint(m.bridgeHint))
+		}
 
 	case tplStepConfirm:
 		if cfg, err := m.buildConfig(); err == nil {
@@ -354,6 +361,9 @@ func (m FromTemplateModel) View() string {
 			)
 			b.WriteString(styleBox.Render(summary))
 			b.WriteString("\n\n")
+		}
+		if m.bridgeHint != "" {
+			b.WriteString(renderBridgeHint(m.bridgeHint))
 		}
 
 	default:

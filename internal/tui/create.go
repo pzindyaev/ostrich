@@ -155,10 +155,13 @@ type CreateVMModel struct {
 	fwIdx  int
 	tpmIdx int
 	netIdx int
-	err    string
-	mgr    *vm.Manager
-	width  int
-	height int
+	// bridgeHint says what the host lacks for tap networking, "" when it is
+	// ready or another network is picked.
+	bridgeHint string
+	err        string
+	mgr        *vm.Manager
+	width      int
+	height     int
 }
 
 // NewCreateVMModel builds a CreateVMModel with sensible defaults.
@@ -261,6 +264,7 @@ func (m *CreateVMModel) cycle(delta int) {
 		m.tpmIdx = wrap(m.tpmIdx+delta, len(tpmLabels))
 	case stepNetwork:
 		m.netIdx = wrap(m.netIdx+delta, len(networkChoices))
+		m.bridgeHint = bridgeHintFor(networkChoices[m.netIdx])
 	}
 }
 
@@ -428,6 +432,9 @@ func (m CreateVMModel) View() string {
 
 	case stepNetwork:
 		b.WriteString("  " + renderChoices(networkLabels, m.netIdx) + "\n\n")
+		if m.bridgeHint != "" {
+			b.WriteString(renderBridgeHint(m.bridgeHint))
+		}
 
 	case stepConfirm:
 		cfg, err := m.buildConfig()
@@ -447,6 +454,9 @@ func (m CreateVMModel) View() string {
 			)
 			b.WriteString(styleBox.Render(summary))
 			b.WriteString("\n\n")
+		}
+		if m.bridgeHint != "" {
+			b.WriteString(renderBridgeHint(m.bridgeHint))
 		}
 
 	default:

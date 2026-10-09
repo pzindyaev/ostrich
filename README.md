@@ -507,7 +507,7 @@ created_at: 2026-10-09T13:33:00Z
 | Mode | Description | Requirements |
 |------|-------------|--------------|
 | `user` | SLIRP/NAT — works out of the box, no host privileges required | none |
-| `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist and be allowed in `/etc/qemu/bridge.conf` — see [Setting up `br0`](#setting-up-br0) |
+| `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist and be allowed in `/etc/qemu/bridge.conf`; the forms say what is missing and how to set it up — see [Setting up `br0`](#setting-up-br0) |
 | `none` | No network interface attached | — |
 
 Port forwards (`port_forwards`) are only used in `user` mode. They map a host TCP/UDP port to a guest port, e.g. `host: 2222 → guest: 22` lets you `ssh -p 2222 localhost` to reach the VM's SSH daemon.
@@ -519,6 +519,24 @@ In `tap` mode the address comes from whatever DHCP server serves the bridge. The
 ### Setting up `br0`
 
 `tap` mode starts QEMU with `-netdev bridge,id=net0,br=br0`. The tap device is created by the setuid `qemu-bridge-helper`, so ostrich itself needs no root — but the bridge has to exist and the helper has to be told it may use it.
+
+Ostrich checks for both, and for the helper, whenever `tap` is picked in the create, edit or template form, and again when a `tap` VM is started. What is missing is shown with the commands that put it in place, ready to copy: the NetworkManager bridge from (a) below when `nmcli` is installed (plain `ip` commands otherwise), the `ufw` rules from step 3 when ufw is enabled, and the `allow` line from step 1.
+
+```
+⚠ tap networking is not set up on this host: the host has no bridge br0; /etc/qemu/bridge.conf does not allow it.
+  Run this, then start the VM:
+
+    sudo nmcli con add type bridge ifname br0 con-name br0 \
+        ipv4.method shared ipv4.addresses 192.168.76.1/24 \
+        ipv6.method disabled bridge.stp no connection.autoconnect yes
+    sudo nmcli con up br0
+    sudo ufw allow in on br0 to any port 67 proto udp
+    sudo ufw allow in on br0 to any port 53
+    sudo ufw route allow in on br0
+    echo 'allow br0' | sudo tee -a /etc/qemu/bridge.conf
+```
+
+The rest of this section is the same setup by hand, with the alternatives.
 
 **1. Allow the bridge for the helper** (all setups):
 

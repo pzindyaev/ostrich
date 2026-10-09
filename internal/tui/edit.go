@@ -79,13 +79,16 @@ type vmUpdateErrMsg struct{ err error }
 
 // EditVMModel is a single-page form for editing an existing VM's properties.
 type EditVMModel struct {
-	orig    *vm.VMConfig
-	field   editField
-	inputs  [editFieldCount]textinput.Model // entries for non-text fields are unused
-	fwIdx   int
-	tpmIdx  int
-	netIdx  int
-	running bool
+	orig   *vm.VMConfig
+	field  editField
+	inputs [editFieldCount]textinput.Model // entries for non-text fields are unused
+	fwIdx  int
+	tpmIdx int
+	netIdx int
+	// bridgeHint says what the host lacks for tap networking, "" when it is
+	// ready or another network is picked.
+	bridgeHint string
+	running    bool
 	// Removing a disk deletes its image, so the first save with removals only
 	// arms the warning; a second save with the field unchanged confirms it.
 	armed      bool
@@ -132,15 +135,16 @@ func NewEditVMModel(mgr *vm.Manager, cfg *vm.VMConfig, width, height int) EditVM
 	info, _ := vm.Status(mgr.StoragePath, cfg.Name)
 
 	return EditVMModel{
-		orig:    cfg,
-		inputs:  inputs,
-		fwIdx:   firmwareIndex(cfg),
-		tpmIdx:  boolIndex(cfg.TPM),
-		netIdx:  netIdx,
-		running: info.Status == vm.StatusRunning,
-		mgr:     mgr,
-		width:   width,
-		height:  height,
+		orig:       cfg,
+		inputs:     inputs,
+		fwIdx:      firmwareIndex(cfg),
+		tpmIdx:     boolIndex(cfg.TPM),
+		netIdx:     netIdx,
+		bridgeHint: bridgeHintFor(networkChoices[netIdx]),
+		running:    info.Status == vm.StatusRunning,
+		mgr:        mgr,
+		width:      width,
+		height:     height,
 	}
 }
 
@@ -235,6 +239,7 @@ func (m *EditVMModel) cycle(delta int) {
 		m.tpmIdx = wrap(m.tpmIdx+delta, len(tpmLabels))
 	case editNetwork:
 		m.netIdx = wrap(m.netIdx+delta, len(networkChoices))
+		m.bridgeHint = bridgeHintFor(networkChoices[m.netIdx])
 	}
 }
 
@@ -464,6 +469,9 @@ func (m EditVMModel) View() string {
 	b.WriteString(styleHelp.Render("  " + editHelp[m.field]))
 	b.WriteString("\n\n")
 
+	if m.bridgeHint != "" {
+		b.WriteString(renderBridgeHint(m.bridgeHint))
+	}
 	if m.warn != "" {
 		b.WriteString(styleWarning.Render("  ⚠ " + m.warn))
 		b.WriteString("\n\n")
