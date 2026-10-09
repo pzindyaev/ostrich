@@ -256,8 +256,11 @@ func Start(storagePath string, cfg *VMConfig) error {
 		return fmt.Errorf("write PID file: %w", err)
 	}
 
-	// Release: let the process run independently
-	_ = cmd.Process.Release()
+	// QEMU runs on its own (its own session, no pipes to us), but it stays our
+	// child: reap it when it exits, or it would linger as a zombie that still
+	// answers signals and so would look like a running VM. Should Ostrich exit
+	// first, init takes over the reaping.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
@@ -283,20 +286,51 @@ func Stop(storagePath, name string) error {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
+		if !processAlive(info.PID) {
 			break // process is gone
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Force-kill if still alive
-	if proc.Signal(syscall.Signal(0)) == nil {
+	if processAlive(info.PID) {
 		_ = proc.Signal(syscall.SIGKILL)
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	cleanupPID(storagePath, name)
 	return nil
+}
+
+// processAlive reports whether pid names a live process. A zombie, one that
+// has exited but whose parent has not reaped it yet, still answers a null
+// signal, so on Linux the state in /proc is checked as well.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	return !isZombie(pid)
+}
+
+// isZombie reads the process state from /proc/<pid>/stat. Without procfs
+// (macOS) nothing can be told, and a process answering signals counts as alive.
+func isZombie(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// "pid (comm) S ...": comm may hold spaces and parentheses, so the state
+	// is the field after the last ')'.
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+2 >= len(s) {
+		return false
+	}
+	return s[i+2] == 'Z'
 }
 
 // Status reads qemu.pid and checks whether that process is alive.
@@ -315,13 +349,7 @@ func Status(storagePath, name string) (ProcessInfo, error) {
 		return ProcessInfo{Status: StatusStopped}, nil
 	}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		cleanupPID(storagePath, name)
-		return ProcessInfo{Status: StatusStopped}, nil
-	}
-
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !processAlive(pid) {
 		cleanupPID(storagePath, name)
 		return ProcessInfo{Status: StatusStopped}, nil
 	}

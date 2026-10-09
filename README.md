@@ -766,7 +766,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085c", TAG+="uaccess
 ## QEMU Process Model
 
 - QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits.**
-- The PID is written to `qemu.pid`; liveness is checked with `kill -0` each time the list or detail screen refreshes.
+- The PID is written to `qemu.pid`; liveness is checked with `kill -0`, and on Linux the process state in `/proc`, each time the list or detail screen refreshes, so a QEMU that has died counts as stopped even before it is reaped. Ostrich reaps the QEMU processes it started as they exit; one that outlives Ostrich is reaped by init.
 - Stop sends `SIGTERM` and waits up to 5 seconds; if the process is still alive it sends `SIGKILL`.
 - The serial console (`-serial file:console.log`) captures all text output from the VM (GRUB, kernel messages, login prompt, shell). This is what the detail screen displays.
 - The QEMU monitor socket (`qemu-monitor.sock`) is available for direct interaction via `socat` or `nc`:
