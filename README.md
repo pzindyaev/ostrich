@@ -420,6 +420,7 @@ The keys are those of the [create form](#create-vm-form). The new VM gets a fres
 │   ├── tpm/                    ← emulated TPM state (TPM VMs only)
 │   ├── swtpm.sock, swtpm.pid, swtpm.log   ← TPM emulator (while running)
 │   ├── console.log             ← serial console log (written while running)
+│   ├── qemu.log                ← QEMU's own output: warnings, and why it would not start
 │   ├── serial.sock             ← serial console Unix socket (interactive, while running)
 │   ├── qemu.pid                ← PID of the running QEMU process
 │   └── qemu-monitor.sock       ← QEMU monitor Unix socket
@@ -427,6 +428,7 @@ The keys are those of the [create form](#create-vm-form). The new VM gets a fres
 │   ├── vm.yaml
 │   ├── disk.qcow2
 │   ├── console.log
+│   ├── qemu.log
 │   ├── serial.sock
 │   ├── qemu.pid
 │   └── qemu-monitor.sock
@@ -767,6 +769,14 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085c", TAG+="uaccess
 
 - QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits.**
 - The PID is written to `qemu.pid`; liveness is checked with `kill -0`, and on Linux the process state in `/proc`, each time the list or detail screen refreshes, so a QEMU that has died counts as stopped even before it is reaped. Ostrich reaps the QEMU processes it started as they exit; one that outlives Ostrich is reaped by init.
+- QEMU's own stdout and stderr go to `qemu.log` in the VM folder, rewritten on every start. A QEMU that refuses its command line, cannot open a disk or ISO, or is denied a bridge dies within moments: start waits for it to either exit or come up (its monitor answering), up to 3 seconds, and a start that fails reports the last lines of that output on the spot, for example:
+
+  ```
+  ✗ QEMU exited during startup (exit status 1):
+      access denied by acl file
+      qemu-system-x86_64: -netdev bridge,id=net0,br=br0: bridge helper failed
+  ```
+
 - Stop sends `SIGTERM` and waits up to 5 seconds; if the process is still alive it sends `SIGKILL`.
 - The serial console (`-serial file:console.log`) captures all text output from the VM (GRUB, kernel messages, login prompt, shell). This is what the detail screen displays.
 - The QEMU monitor socket (`qemu-monitor.sock`) is available for direct interaction via `socat` or `nc`:

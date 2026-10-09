@@ -166,6 +166,12 @@ func PIDPath(storagePath, name string) string {
 	return filepath.Join(VMDir(storagePath, name), "qemu.pid")
 }
 
+// QEMULogPath returns the file QEMU's own stdout and stderr go to: its
+// warnings, and the reason when it refuses to start. Rewritten on each start.
+func QEMULogPath(storagePath, name string) string {
+	return filepath.Join(VMDir(storagePath, name), "qemu.log")
+}
+
 // MonitorPath returns the QEMU monitor Unix socket path.
 func MonitorPath(storagePath, name string) string {
 	return filepath.Join(VMDir(storagePath, name), "qemu-monitor.sock")

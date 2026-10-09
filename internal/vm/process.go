@@ -3,6 +3,7 @@ package vm
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -31,6 +32,17 @@ func (s VMStatus) String() string {
 	}
 	return "stopped"
 }
+
+// Start watches a freshly launched QEMU until it is evidently up or has
+// died. QEMU that rejects its command line or cannot open a file exits within
+// milliseconds; one that comes up has its monitor answering once its setup is
+// through and the main loop runs. Past the grace period it is assumed up.
+const (
+	startGrace         = 3 * time.Second
+	startProbeTimeout  = 250 * time.Millisecond
+	startProbeInterval = 50 * time.Millisecond
+	startErrLines      = 8 // of QEMU's output shown in the start error
+)
 
 // SLIRP (user networking) addressing. Each VM gets its own private SLIRP
 // network with a single NIC, so the built-in DHCP server always hands out
@@ -195,8 +207,8 @@ func Start(storagePath string, cfg *VMConfig) error {
 			return err
 		}
 	}
-	// QEMU's own failure to open a USB device only goes to its stderr (discarded
-	// below) and the VM would run with the device missing, so check up front.
+	// QEMU's own failure to open a USB device is only a warning in its log and
+	// the VM would run with the device missing, so check up front.
 	if err := CheckUSBAccess(cfg.USBDevices); err != nil {
 		return err
 	}
@@ -239,9 +251,18 @@ func Start(storagePath string, cfg *VMConfig) error {
 		return err
 	}
 	defer devNull.Close()
+	// QEMU's own output goes to a file in the VM directory: it is what tells
+	// why a start failed, and it has to outlive Ostrich (a pipe would not).
+	logPath := QEMULogPath(storagePath, cfg.Name)
+	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		stopTPM(storagePath, cfg.Name)
+		return fmt.Errorf("create QEMU log: %w", err)
+	}
+	defer logFile.Close()
 	cmd.Stdin = devNull
-	cmd.Stdout = devNull
-	cmd.Stderr = devNull
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
 		stopTPM(storagePath, cfg.Name)
@@ -260,8 +281,82 @@ func Start(storagePath string, cfg *VMConfig) error {
 	// child: reap it when it exits, or it would linger as a zombie that still
 	// answers signals and so would look like a running VM. Should Ostrich exit
 	// first, init takes over the reaping.
-	go func() { _ = cmd.Wait() }()
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	// A QEMU that will not start is gone within moments, so wait for it to
+	// either die or come up rather than call the launch a success.
+	if err := awaitStartup(exited, MonitorPath(storagePath, cfg.Name), logPath, startGrace); err != nil {
+		cleanupPID(storagePath, cfg.Name)
+		stopTPM(storagePath, cfg.Name)
+		return err
+	}
 	return nil
+}
+
+// awaitStartup waits for a just-launched QEMU to show whether it made it:
+// exited delivers its exit status should it die, and its monitor answers
+// once it is up. After grace it is taken to be up; should it die later, its
+// log still has the reason.
+func awaitStartup(exited <-chan error, monitorSock, logPath string, grace time.Duration) error {
+	deadline := time.Now().Add(grace)
+	for {
+		select {
+		case err := <-exited:
+			return startFailure(err, logPath)
+		default:
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		if monitorAnswers(monitorSock, startProbeTimeout) {
+			return nil
+		}
+		time.Sleep(startProbeInterval)
+	}
+}
+
+// monitorAnswers reports whether the HMP monitor behind sock accepts a
+// connection and prompts within timeout. QEMU creates the listening socket
+// while still parsing its command line, so a connection alone proves little;
+// the prompt arrives once the main loop runs, that is, once setup is through.
+func monitorAnswers(sock string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("unix", sock, timeout)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	_, err = readUntilPrompt(conn)
+	return err == nil
+}
+
+// startFailure describes a QEMU that exited during startup, quoting what it
+// printed. The TUI gets the last few lines; the log file keeps everything.
+func startFailure(waitErr error, logPath string) error {
+	how := "QEMU exited during startup"
+	if waitErr != nil {
+		how += " (" + waitErr.Error() + ")" // "exit status 1", "signal: killed"
+	}
+	lines, _ := readTail(logPath, startErrLines+1)
+	if len(lines) == 0 {
+		return fmt.Errorf("%s without any output", how)
+	}
+	var b strings.Builder
+	b.WriteString(how)
+	b.WriteString(":")
+	truncated := len(lines) > startErrLines
+	if truncated {
+		lines = lines[1:]
+	}
+	for _, l := range lines {
+		b.WriteString("\n  ")
+		b.WriteString(l)
+	}
+	if truncated {
+		fmt.Fprintf(&b, "\n  (full output in %s)", logPath)
+	}
+	return fmt.Errorf("%s", b.String())
 }
 
 // Stop sends SIGTERM to the VM process and waits up to 5 s before SIGKILL.
@@ -359,7 +454,13 @@ func Status(storagePath, name string) (ProcessInfo, error) {
 
 // ReadConsoleTail returns the last maxLines lines from the serial console log.
 func ReadConsoleTail(storagePath, name string, maxLines int) ([]string, error) {
-	f, err := os.Open(ConsolePath(storagePath, name))
+	return readTail(ConsolePath(storagePath, name), maxLines)
+}
+
+// readTail returns the last maxLines lines of a log file; none when there is
+// no such file.
+func readTail(path string, maxLines int) ([]string, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
