@@ -1,33 +1,49 @@
 # Ostrich
 
-A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https://github.com/charmbracelet/bubbletea).
+A terminal dashboard for managing QEMU virtual machines, written in Rust with [ratatui](https://ratatui.rs).
 
 ```
-┌─ Ostrich — Virtual Machines ──────────────────────────────────────────────┐
-│                                                                             │
-│  debian-12             ● running  (PID 94231)   CPU: 2  RAM: 2048  Disk: 20 GiB │
-│  ubuntu-24             ● stopped                CPU: 4  RAM: 4096  Disk: 40 GiB │
-│  windows-11            ● stopped                CPU: 8  RAM: 8192  Disk: 80 GiB │
-│                                                                             │
-│  j/k: navigate  g/G: top/bottom  ^d/^u: half-page  l/enter: open          │
-│  n: new  s: start  x: stop  d: delete  r: refresh  q: quit                │
-└─────────────────────────────────────────────────────────────────────────────┘
+╭ Virtual Machines (3) ──────────╮╭ debian-12 ─────────────────────────────────────────────────────╮
+│ ▸ debian-12   ● running        ││ Status    ● running  (PID 767371)                              │
+│   ubuntu-24   ● stopped        ││ CPU       2 cores                                              │
+│   windows-11  ● stopped        ││ RAM       2048 MiB                                             │
+│                                ││ Disk      20 GiB                                               │
+│                                ││ ISO       (none)                                               │
+│                                ││ Firmware  UEFI, TPM 2.0                                        │
+│                                ││ Net       user [2222→22]                                       │
+│                                ││ IP        10.0.2.15  —  ssh -p 2222 localhost                  │
+│                                ││ VNC       127.0.0.1:1  (TCP port 5901)                         │
+│                                ││ USB       (none)                                               │
+│                                ││ USB ISO   (none)                                               │
+│                                ││ Created   2026-03-17 10:00                                     │
+│                                │╰────────────────────────────────────────────────────────────────╯
+│                                │╭ Serial console · debian-12 · last 200 lines · 2s ──────────────╮
+│                                ││ [  OK  ] Started ssh.service - OpenBSD Secure Shell server.    │
+╰────────────────────────────────╯│                                                                │
+╭ Templates (2) ─────────────────╮│ Debian GNU/Linux 12 debian ttyS0                               │
+│ ▸ debian-12-base  UEFI, TPM…   ││                                                                █
+│   win11-base      UEFI + Secu… ││ debian login:                                                  █
+╰────────────────────────────────╯╰─────────────────────────────────────────────────── ↓ following ╯
+ ✓ started debian-12
+ j/k move  s start  x stop  n new  e edit  u USB  i ISO  t template  d delete  ? keys  q quit
 ```
+
+The VMs and the templates are on the left; the right side follows the selection with the VM's details and its live serial console. Forms and device dialogs open in the right-hand column, so the list stays in view.
 
 ## Features
 
 - **Create VMs** — guided multi-step form for CPU, RAM, disks, networking, and VNC
 - **Start / stop VMs** — QEMU processes are detached and survive TUI exit
-- **Live console view** — serial console output streamed in the detail screen, auto-refreshed every 2 seconds
-- **Interactive serial console** — press `c` in the detail screen to connect directly to the VM's serial port (via `socat`); Ctrl-`]` to disconnect
+- **Live console view** — the selected VM's serial console output in its own pane, auto-refreshed every 2 seconds
+- **Interactive serial console** — press `c` to connect directly to the selected VM's serial port (via `socat`); Ctrl-`]` to disconnect
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
 - **ISO hot-plug** — press `i` to swap or eject the boot ISO in a running VM's CD-ROM drive, and to attach ISOs (or any raw disk image) as read-only USB drives; applied in the running guest on the spot, at boot otherwise
 - **ISO picker** — every ISO input offers the images used before, with their size or whether the file has gone, and takes the path of a new one
 - **Multiple disks** — give a VM additional virtio disks when creating it or later in the edit form; a disk added to a running VM is hot-plugged on the spot — see [Additional Disks](#additional-disks)
-- **VM templates** — press `t` to freeze a stopped VM (disk, UEFI NVRAM, TPM state) as a template; `T` lists the templates, and new VMs are made from one with their own name, CPU, RAM and network — see [Templates](docs/USAGE.md#templates)
+- **VM templates** — press `t` to freeze a stopped VM (disk, UEFI NVRAM, TPM state) as a template; the templates pane lists them, and new VMs are made from one with their own name, CPU, RAM and network — see [Templates](docs/USAGE.md#templates)
 - **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
-- **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` is accessible
+- **KVM auto-detection** — `-enable-kvm -cpu host` added automatically when `/dev/kvm` exists and the VM's architecture is the host's
 - **Networking modes** — user/NAT (with optional port forwards), tap/bridge, or none
 - **YAML config per VM** — human-readable, hand-editable `vm.yaml` in each VM folder
 - **Vim keybindings** throughout
@@ -38,10 +54,12 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 |---|---|
 | `qemu-system-*` | Running virtual machines |
 | `qemu-img` | Creating qcow2 disk images |
-| Go 1.21+ | Building from source |
+| Rust 1.88+ (`cargo`) | Building from source |
 | OVMF / edk2 (optional) | UEFI firmware for `firmware: uefi` VMs |
 | `swtpm` (optional) | Emulated TPM 2.0 for `tpm: true` VMs |
 | `virt-fw-vars` (optional) | Enrolls Secure Boot keys where the OVMF package ships none (Arch, Homebrew); from the `virt-firmware` package |
+| `socat` (optional) | The interactive serial console (`c`) — see [Serial Console](#serial-console) |
+| A VNC viewer (optional) | `v` — see [VNC Display](#vnc-display) |
 
 Install QEMU on common distros:
 
@@ -63,14 +81,14 @@ brew install qemu swtpm && pip install virt-firmware
 
 ### Pre-built binaries
 
-Every tagged release ships static binaries for Linux and macOS (amd64 and arm64) on the [GitHub Releases](https://github.com/pzindyaev/ostrich/releases) page. Download the archive for your platform, verify it against `checksums.txt` if you like, and put the binary on your `PATH`:
+Every tagged release ships binaries for Linux (static, musl) and macOS, amd64 and arm64, on the [GitHub Releases](https://github.com/pzindyaev/ostrich/releases) page. Download the archive for your platform, verify it against `checksums.txt` if you like, and put the binary on your `PATH`:
 
 ```bash
 # Example: Linux x86_64 — adjust the version and platform to taste
 VERSION=1.0.0
 curl -fsSLO https://github.com/pzindyaev/ostrich/releases/download/v${VERSION}/ostrich_${VERSION}_linux_amd64.tar.gz
-tar -xzf ostrich_${VERSION}_linux_amd64.tar.gz ostrich
-sudo install -m755 ostrich /usr/local/bin/ostrich
+tar -xzf ostrich_${VERSION}_linux_amd64.tar.gz
+sudo install -m755 ostrich_${VERSION}_linux_amd64/ostrich /usr/local/bin/ostrich
 ostrich --version
 ```
 
@@ -79,39 +97,43 @@ ostrich --version
 ```bash
 git clone https://github.com/pzindyaev/ostrich
 cd ostrich
-make build        # or: go build -o ostrich .
+make build        # or: cargo build --release, which leaves it in target/release/
 ./ostrich
 ```
 
-Or install directly to `$GOPATH/bin`:
+Or install straight into `~/.cargo/bin`:
 
 ```bash
-go install github.com/pzindyaev/ostrich@latest
+cargo install --git https://github.com/pzindyaev/ostrich
 ```
 
-`ostrich --version` prints the version, commit and build date baked in at build time (`dev` for plain `go build`).
+`ostrich --version` prints `ostrich <version> (commit <commit>, built <date>)`, baked in at build time: for a plain `cargo build` the version comes from `git describe` and the date is that of the last commit, and cargo rebuilds the stamp after a commit, a new tag or a staged change (in a git worktree too); `OSTRICH_VERSION`, `OSTRICH_COMMIT` and `OSTRICH_DATE` in the environment override them, which is what `make` and the release workflow do.
 
 ## First Run
 
 On first launch Ostrich shows a setup wizard asking for a **VM storage directory**. All VM sub-folders will be created here. The choice is saved to `~/.config/ostrich/config.json` and never asked again.
 
 ```
-  Ostrich — QEMU Manager
-  First-run setup
-
-  VM Storage Directory
-  Each VM will get its own sub-folder here containing its disk and config.
-
-  > ~/VMs
-
-  Enter — confirm   Ctrl+C — quit
+╭────────────────────────────────────────────────────────────────────────────╮
+│ Ostrich — QEMU Manager                                                     │
+│ First-run setup                                                            │
+│                                                                            │
+│ VM Storage Directory                                                       │
+│ Each VM will get its own sub-folder here containing its disk and config.   │
+│                                                                            │
+│ ▸ /home/user/VMs                                                           │
+│                                                                            │
+│ Enter confirm  Esc/Ctrl-c quit                                             │
+╰────────────────────────────────────────────────────────────────────────────╯
 ```
 
-The directory is created automatically if it does not exist.
+The directory is created automatically if it does not exist. `Esc` or `Ctrl-c` quits without saving anything, so the screen comes back on the next launch. It also comes up when `config.json` has no `vm_storage_path`, or a `null` or blank one — see [App Configuration](#app-configuration).
 
 ## Usage
 
-The screen-by-screen guide — the VM list, detail view, create and edit forms, USB passthrough, ISO hot-plug and templates — is in [docs/USAGE.md](docs/USAGE.md).
+The guide to the dashboard — the lists, the details and console panes, the create and edit forms, USB passthrough, ISO hot-plug and templates, with every key — is in [docs/USAGE.md](docs/USAGE.md).
+
+Ostrich takes no options of its own: `ostrich` opens the dashboard, `ostrich --version` (or `version`, `-v`) prints the version line, and `ostrich --help` (or `help`, `-h`) a short usage. Any other argument, even one that is not valid UTF-8, is ignored and the dashboard opens. If `~/.config/ostrich/config.json` cannot be read or parsed, Ostrich prints `error initializing: <error>` and exits with status 1 before touching the terminal; with no terminal to draw on it prints `error: initialize terminal: <error>` and exits with status 1.
 
 ## VM Storage Layout
 
@@ -123,7 +145,7 @@ The screen-by-screen guide — the VM list, detail view, create and edit forms, 
 │   ├── data.qcow2              ← an additional disk named "data" — see Additional Disks
 │   ├── efivars.fd              ← UEFI NVRAM: boot entries, Secure Boot keys (UEFI VMs only)
 │   ├── tpm/                    ← emulated TPM state (TPM VMs only)
-│   ├── swtpm.sock, swtpm.pid, swtpm.log   ← TPM emulator (while running)
+│   ├── swtpm.sock, swtpm.pid, swtpm.log   ← TPM emulator (socket and PID while running)
 │   ├── console.log             ← serial console log (written while running)
 │   ├── qemu.log                ← QEMU's own output: warnings, and why it would not start
 │   ├── serial.sock             ← serial console Unix socket (interactive, while running)
@@ -164,9 +186,9 @@ cdrom_path: /home/user/iso/debian-12.iso   # the CD-ROM drive; omit (or eject wi
 firmware: uefi      # bios (default) | uefi — see UEFI, Secure Boot and TPM 2.0
 secure_boot: true   # enforce Secure Boot with Microsoft's keys; implies uefi
 tpm: true           # emulated TPM 2.0 (swtpm)
-network:
-  type: user     # user | tap | none
-  mac: 52:54:00:ab:cd:ef
+network:         # leave it out for user (NAT) networking
+  type: user     # user | tap | none; left out, empty or any other word is user
+  mac: 52:54:00:ab:cd:ef   # or 52-54-00-ab-cd-ef, 5254.00ab.cdef; QEMU gets the colon form
   port_forwards:
     - host: 2222
       guest: 22
@@ -182,10 +204,14 @@ usb_devices:     # host USB devices passed through — see USB Passthrough
   - vendor_id: "0781"
     product_id: "5583"
     port: 3-2.2.4                  # optional: pin to one physical port
-usb_images:      # disk images attached as read-only USB drives — see ISO hot-plug screen
+usb_images:      # disk images attached as read-only USB drives — see the ISO hot-plug dialog
   - path: /home/user/iso/virtio-win.iso
 created_at: 2026-03-17T09:00:00Z
 ```
+
+A hand-edited file is read the way the Go version of Ostrich read it. Only `name` is required: a missing key, or one with an empty value (`null`, `~` or nothing after the colon), is the zero value — `0`, an empty string, `false`, an empty list. Booleans (`secure_boot`, `tpm`, and `vnc` in a template) also take the YAML 1.1 words `yes`/`no`, `on`/`off` and `y`/`n`, in lower case, capitalised or upper case. `created_at` may also be a date alone (`2026-10-09`) or a date and time without a zone (`2026-10-09 13:33:00`), both taken as UTC. Only `network.type: tap` and `network.type: none` mean something other than `user`: a file without `network:`, or with a missing, empty or unknown `network.type`, gets `user` (NAT) networking. A `user` or `tap` VM without a `mac` gets QEMU's default, `52:54:00:12:34:56`, so give each `tap` VM on the bridge its own. Values that are wrong do not hide the VM from the list; they are reported when they are used, starting the VM for example — `invalid USB device "046d":"" — vendor_id and product_id must be 4 hex digits`, `USB drive .: no image path`.
+
+Ostrich writes `vm.yaml`, `template.yaml` and its own `config.json` atomically: the new contents go to a temporary file in the same directory, which is then renamed over the old file, so a crash or a full disk never leaves one cut short. The file keeps its permissions, a symlink stays a symlink (the file it points to is replaced, through a chain of links too, and created if it does not exist yet; a symlink loop is an error), and saving needs write permission on the directory that holds the file.
 
 ### Template file
 
@@ -207,19 +233,21 @@ vnc: true              # the source had a VNC display; a new VM gets a free one
 created_at: 2026-10-09T13:33:00Z
 ```
 
+It is read like `vm.yaml`; a missing, empty or unknown `network` is `user`.
+
 ### Network modes
 
 | Mode | Description | Requirements |
 |------|-------------|--------------|
 | `user` | SLIRP/NAT — works out of the box, no host privileges required | none |
 | `tap` | Bridged tap — full network access, uses host bridge `br0` | `br0` must exist and be allowed in `/etc/qemu/bridge.conf`; the forms say what is missing and how to set it up — see [Setting up `br0`](#setting-up-br0) |
-| `none` | No network interface attached | — |
+| `none` | No network interface attached (`-nic none`). The other devices keep the PCI addresses older versions gave them: the main disk `00:04.0`, the xHCI controller `00:03.0` and, on aarch64, the CD-ROM's SCSI controller `00:02.0`, so a UEFI guest installed under an older Ostrich still boots | — |
 
 Port forwards (`port_forwards`) are only used in `user` mode. They map a host TCP/UDP port to a guest port, e.g. `host: 2222 → guest: 22` lets you `ssh -p 2222 localhost` to reach the VM's SSH daemon.
 
-In `user` mode each VM sits on its own private SLIRP network (`10.0.2.0/24`), so the guest's DHCP address is always `10.0.2.15` (gateway `10.0.2.2`). The detail view shows it while the VM is running. The address is internal to QEMU and not reachable from the host — use port forwards to get in.
+In `user` mode each VM sits on its own private SLIRP network (`10.0.2.0/24`), so the guest's DHCP address is always `10.0.2.15` (gateway `10.0.2.2`). The details pane shows it while the VM is running, followed by a ready `ssh -p <port> localhost` when a TCP port forward goes to guest port 22. The address is internal to QEMU and not reachable from the host — use port forwards to get in.
 
-In `tap` mode the address comes from whatever DHCP server serves the bridge. The detail view finds it by the VM's MAC, checking local dnsmasq lease files first and then the host's ARP table (`/proc/net/arp`, Linux only). With the NetworkManager setup below the lease file is root-only, so the ARP table is what gets used; the entry appears as soon as the guest has completed DHCP.
+In `tap` mode the address comes from whatever DHCP server serves the bridge. The details pane finds it by the VM's MAC, checking local dnsmasq lease files first and then the host's ARP table (`/proc/net/arp`, Linux only). With the NetworkManager setup below the lease file is root-only, so the ARP table is what gets used; the entry appears as soon as the guest has completed DHCP.
 
 ### Setting up `br0`
 
@@ -239,6 +267,9 @@ Ostrich checks for both, and for the helper, whenever `tap` is picked in the cre
     sudo ufw allow in on br0 to any port 53
     sudo ufw route allow in on br0
     echo 'allow br0' | sudo tee -a /etc/qemu/bridge.conf
+
+  This makes a NAT'd bridge that stays across reboots: guests get 192.168.76.10–254 by DHCP and reach the internet through the host. The ufw rules let the guests use the host's DHCP and DNS and route out.
+  For a bridge onto a wired NIC, and to undo, see the README section "Setting up br0".
 ```
 
 The rest of this section is the same setup by hand, with the alternatives.
@@ -327,7 +358,7 @@ QEMU is started with:
 -device virtio-blk-pci,id=disk-data,drive=disk-data-drive,bus=disk-rp1,serial=data
 ```
 
-Every VM gets the eight PCIe root ports whether it has extra disks or not, like the xHCI controller: the PCIe root bus does not take hot-plugged devices, a root port does, so a disk added while the VM runs goes onto the port its position in the list names (`drive_add`, then `device_add` over the monitor). The ports are pinned to high slots so the devices QEMU places by itself — the main disk, the xHCI controller, the network card — keep the PCI addresses they have always had; OVMF boot entries record the disk's address, and existing UEFI VMs keep booting unchanged. A VM started by an older Ostrich has no ports yet, so hot-plug fails until it is restarted; the disk is created and saved either way and attached at the next start.
+Every VM gets the eight PCIe root ports whether it has extra disks or not, like the xHCI controller: the PCIe root bus does not take hot-plugged devices, a root port does, so a disk added while the VM runs goes onto the port its position in the list names (`drive_add`, then `device_add` over the monitor). The ports are pinned to high slots so the devices QEMU places by itself — the main disk, the xHCI controller, the network card — keep the PCI addresses they have always had (a VM without a network card has them pinned, see [Network modes](#network-modes)); OVMF boot entries record the disk's address, and existing UEFI VMs keep booting unchanged. A VM started by an older Ostrich has no ports yet, so hot-plug fails until it is restarted; the disk is created and saved either way and attached at the next start.
 
 Notes:
 
@@ -357,7 +388,7 @@ QEMU is started with:
 -device tpm-tis,tpmdev=tpm0
 ```
 
-and `swtpm` as `swtpm socket --tpm2 --tpmstate dir=~/VMs/windows-11/tpm --ctrl type=unixio,path=~/VMs/windows-11/swtpm.sock --terminate --daemon`. It exits by itself when QEMU disconnects.
+and `swtpm` as `swtpm socket --tpm2 --tpmstate dir=~/VMs/windows-11/tpm --ctrl type=unixio,path=~/VMs/windows-11/swtpm.sock --pid file=~/VMs/windows-11/swtpm.pid --log file=~/VMs/windows-11/swtpm.log --terminate --daemon`. It exits by itself when QEMU disconnects.
 
 ### Finding the firmware
 
@@ -392,17 +423,17 @@ Each VM's serial port is connected to a Unix socket (`serial.sock`) and simultan
 
 This means:
 
-- The **detail screen** always shows the last 200 lines of `console.log`, auto-refreshed every 2 seconds — no connection needed.
-- Pressing **`c`** in the detail screen suspends the TUI and drops you into a live, bidirectional terminal session with the VM's serial console. Press **Ctrl-`]`** to disconnect and return to Ostrich.
+- The **console pane** of the dashboard always shows the last 200 lines of `console.log` for the selected VM, auto-refreshed every 2 seconds — no connection needed. It follows the newest output until you scroll up. Only the end of the log is read, however large it grows; a line longer than 64 KiB shows only its last 64 KiB.
+- Pressing **`c`** on a running VM suspends the TUI and drops you into a live, bidirectional terminal session with the VM's serial console, with the cursor shown. Your terminal is in raw mode for the session, so Ctrl-C, Ctrl-Z, Ctrl-`\`, Tab and the arrow keys go to the guest rather than to Ostrich. Press **Ctrl-`]`** to disconnect; the dashboard comes back with `✓ disconnected from serial console`. On a stopped VM `c` says `✗ VM is not running`, and without `socat` `✗ socat not found — install it…` with the commands below.
 
 The interactive connection uses `socat`:
 
 ```bash
 # What Ostrich runs internally when you press c:
-socat -,escape=0x1d UNIX-CONNECT:~/VMs/debian-12/serial.sock
+socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:~/VMs/debian-12/serial.sock
 
-# You can also connect from a second terminal at any time:
-socat -,raw,echo=0 UNIX-CONNECT:~/VMs/debian-12/serial.sock
+# You can also connect from a second terminal at any time (Ctrl-] disconnects):
+socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:~/VMs/debian-12/serial.sock
 ```
 
 Install `socat` if not already present:
@@ -419,13 +450,13 @@ brew install socat          # macOS
 
 Set `vnc_port` to a display number (1–99) to enable a VNC server for the VM. Ostrich passes `-vnc 127.0.0.1:<n>` to QEMU, binding the VNC server to localhost on TCP port `5900 + n`.
 
-With VNC enabled, pressing **`v`** in the detail screen launches a VNC viewer in the background (the TUI stays open).
+With VNC enabled, pressing **`v`** on a running VM launches a VNC viewer in the background (the TUI stays open) and says so: `✓ launched vncviewer → port 5901`. Otherwise it says why not: `✗ VNC is not enabled for this VM (vnc_port: 0)`, `✗ VM is not running`, or `✗ no VNC viewer found — …` with the commands below; a viewer that cannot be started gives `✗ launch VNC viewer: <viewer path>: <error>`.
 
 ```
 VNC display 1  →  TCP port 5901  →  connect with: vncviewer 127.0.0.1::5901
 ```
 
-Ostrich tries these viewers in order: `vncviewer`, `tigervnc`, `xtightvncviewer`, `krdc`, `vinagre`, `remmina`.
+Ostrich tries these viewers in order: `vncviewer`, `tigervnc`, `xtightvncviewer`, `remmina`, `krdc`, `vinagre`.
 
 Install TigerVNC (recommended):
 
@@ -435,7 +466,7 @@ sudo dnf install tigervnc           # Fedora
 brew install --cask tigervnc-viewer # macOS
 ```
 
-To connect manually from another machine (replace `<host>` and `<n>`):
+To connect manually (replace `<host>` and `<port>`; from another machine only through the SSH tunnel below):
 
 ```bash
 # Full port form (unambiguous, works with all viewers):
@@ -463,9 +494,9 @@ Because the controller is always present, devices can be hot-plugged into a runn
 
 ### Host permissions
 
-QEMU runs as your user and opens the device node under `/dev/bus/usb/`, which is normally writable by root only. Without access QEMU starts fine but never attaches the device and only complains on its (discarded) stderr, so Ostrich checks first: the picker flags such devices with **✗ no access**, and starting a VM whose device is plugged in but inaccessible fails with the command needed to fix it.
+QEMU runs as your user and opens the device node under `/dev/bus/usb/`, which is normally writable by root only. Without access QEMU starts fine but never attaches the device and only complains in `qemu.log`, so Ostrich checks first: the picker flags such devices with **✗ no access**, and starting a VM whose device is plugged in but inaccessible fails with the command needed to fix it.
 
-Move the cursor onto a flagged device and the picker shows the command that grants access, ready to run in another terminal — select it with the mouse or press `y` to copy it to the clipboard (needs `wl-copy` or `xclip`), run it, then press `r` to rescan:
+Move the cursor onto a flagged device and the picker shows the command that grants access, ready to run in another terminal — select it with the mouse or press `y` to copy it to the clipboard, run it, then press `r` to rescan. Copying uses `wl-copy` in a Wayland session (`WAYLAND_DISPLAY` set, and `wl-paste` installed too), otherwise `xclip`, then `xsel` (`termux-clipboard-set` under Termux, `clip.exe` under WSL), and `pbcopy` on macOS:
 
 ```sh
 echo 'SUBSYSTEM=="usb",' 'ATTR{idVendor}=="046d",' 'ATTR{idProduct}=="085c",' 'TAG+="uaccess"' \
@@ -490,9 +521,9 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085c", TAG+="uaccess
 
 ## QEMU Process Model
 
-- QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits.**
-- The PID is written to `qemu.pid`; liveness is checked with `kill -0`, and on Linux the process state in `/proc`, each time the list or detail screen refreshes, so a QEMU that has died counts as stopped even before it is reaped. Ostrich reaps the QEMU processes it started as they exit; one that outlives Ostrich is reaped by init.
-- QEMU's own stdout and stderr go to `qemu.log` in the VM folder, rewritten on every start. A QEMU that refuses its command line, cannot open a disk or ISO, or is denied a bridge dies within moments: start waits for it to either exit or come up (its monitor answering), up to 3 seconds, and a start that fails reports the last lines of that output on the spot, for example:
+- QEMU is launched with `setsid`, placing it in its own process group. **VMs keep running after Ostrich exits** — however it exits: `q`, `Ctrl-c`, a `SIGINT` or `SIGTERM` (which quit the way `Ctrl-c` does, see [Quitting](docs/USAGE.md#quitting)), or a `SIGHUP` when the terminal is closed, which ends Ostrich at once.
+- The PID is written to `qemu.pid`; liveness is checked with `kill -0`, and on Linux the process state in `/proc`, each time the dashboard refreshes, so a QEMU that has died counts as stopped even before it is reaped. On Linux the PID must also still belong to a QEMU (`/proc/<pid>/cmdline`): a `qemu.pid` left over from a crash or a reboot, whose PID some other program has since been given, counts as stopped and is removed, and that program is never signalled. `swtpm.pid` is checked the same way. Ostrich reaps the QEMU processes it started as they exit; one that outlives Ostrich is reaped by init.
+- QEMU's own stdout and stderr go to `qemu.log` in the VM folder, rewritten on every start. A QEMU that refuses its command line, cannot open a disk or ISO, or is denied a bridge dies within moments: start waits for it to either exit or come up (its monitor answering), up to 3 seconds, and a start that fails reports the last 8 lines of that output on the spot (with the path of the log when there is more), for example:
 
   ```
   ✗ QEMU exited during startup (exit status 1):
@@ -500,13 +531,15 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085c", TAG+="uaccess
       qemu-system-x86_64: -netdev bridge,id=net0,br=br0: bridge helper failed
   ```
 
-- Stop sends `SIGTERM` and waits up to 5 seconds; if the process is still alive it sends `SIGKILL`.
-- The serial console (`-serial file:console.log`) captures all text output from the VM (GRUB, kernel messages, login prompt, shell). This is what the detail screen displays.
+- Stop sends `SIGTERM` and waits up to 5 seconds; if the process is still alive it sends `SIGKILL`. The TPM emulator, if any, is stopped with it.
+- The serial console (`-chardev socket,...,logfile=console.log`) captures all text output from the VM (GRUB, kernel messages, login prompt, shell). This is what the console pane displays.
 - The QEMU monitor socket (`qemu-monitor.sock`) is available for direct interaction via `socat` or `nc`:
 
   ```bash
   socat - UNIX-CONNECT:~/VMs/debian-12/qemu-monitor.sock
   ```
+
+  The monitor serves one client at a time, and Ostrich connects to it for every hot-plug (USB devices, the boot ISO, USB drives, new disks). While you hold it, those wait up to 5 seconds and then fail with `connect to QEMU monitor: <path>: i/o timeout`; disconnect and try again.
 
 ## App Configuration
 
@@ -522,7 +555,7 @@ Stored at `~/.config/ostrich/config.json`:
 }
 ```
 
-To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again.
+To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again. A `vm_storage_path` that is missing, `null` or blank brings up the wizard too, instead of putting the VMs in whatever directory Ostrich was started from; the `recent_isos` already in the file are kept when it saves. Otherwise a missing key or a `null` is the empty value, as for `vm.yaml`; a file that is not valid JSON, or cannot be read, stops Ostrich at launch with `error initializing: <error>`. The file is saved atomically, like `vm.yaml` (see [VM Configuration File](#vm-configuration-file)), so it may be a symlink into a dotfiles repository.
 
 `recent_isos` is the list the [ISO picker](docs/USAGE.md#choosing-an-iso) offers: every image put in a CD-ROM drive or attached as a USB drive is added at the top, the newest 20 are kept, and `d` in the picker takes one out. Images that a VM still has in its `vm.yaml` are offered whether or not they are in this list.
 
@@ -530,33 +563,45 @@ To reconfigure the storage path, edit this file or delete it to trigger the firs
 
 ```
 ostrich/
-├── main.go
-├── go.mod
+├── Cargo.toml
+├── build.rs                 # bakes version, commit and date into the binary
 ├── Makefile
-├── .goreleaser.yaml         # release build matrix, archives, changelog
+├── docs/
+│   └── USAGE.md             # the guide to the dashboard, pane by pane
+├── scripts/
+│   ├── package.sh           # release archive for one target (root-owned, commit-dated)
+│   └── changelog.sh         # release notes from the git history
 ├── .github/workflows/
 │   └── release.yml          # builds a GitHub release on every v* tag
-└── internal/
-    ├── config/
-    │   └── config.go        # app config load/save
+└── src/
+    ├── main.rs              # --version / --help, then the dashboard
+    ├── lib.rs
+    ├── config.rs            # app config (~/.config/ostrich/config.json), recent ISOs
     ├── vm/
-    │   ├── vm.go            # VMConfig struct, YAML schema, path helpers
-    │   ├── manager.go       # list / create / delete VMs, qemu-img wrapper
-    │   ├── process.go       # start / stop / status, console log reader
-    │   ├── cdrom.go         # the CD-ROM drive holding the boot ISO, hot-swap
-    │   ├── disk.go          # additional disks: config, images, QEMU args, hot-plug
-    │   ├── usb.go           # host USB enumeration (sysfs), passthrough config, hot-plug
-    │   ├── usbimage.go      # disk images attached as USB drives (ISO hot-plug)
-    │   └── monitor.go       # HMP monitor socket client
+    │   ├── config.rs        # VmConfig, the vm.yaml schema, path helpers
+    │   ├── manager.rs       # list / create / update / delete VMs
+    │   ├── process.rs       # QEMU command line, start / stop / status, console tail
+    │   ├── monitor.rs       # HMP monitor socket client
+    │   ├── cdrom.rs         # the CD-ROM drive holding the boot ISO, hot-swap
+    │   ├── disk.rs          # additional disks: config, images, QEMU args, hot-plug
+    │   ├── usb.rs           # host USB enumeration (sysfs), passthrough config, hot-plug
+    │   ├── usbimage.rs      # disk images attached as USB drives (ISO hot-plug)
+    │   ├── firmware.rs      # OVMF discovery, per-VM NVRAM, Secure Boot key enrolment
+    │   ├── tpm.rs           # swtpm
+    │   ├── bridge.rs        # what tap networking needs on the host, and how to set it up
+    │   ├── guestip.rs       # the guest's IP: SLIRP, dnsmasq leases, ARP
+    │   └── template.rs      # VM templates
     └── tui/
-        ├── app.go           # root Bubbletea model, screen router
-        ├── styles.go        # Lipgloss colour palette and styles
-        ├── setup.go         # first-run wizard
-        ├── list.go          # VM list screen
-        ├── create.go        # VM creation form
-        ├── edit.go          # VM edit form
-        ├── usb.go           # USB passthrough picker
-        ├── iso.go           # ISO hot-plug screen
-        ├── isopicker.go     # the ISO dialog behind every ISO input: images used before, or a new path
-        └── detail.go        # VM detail + live console view
+        ├── app.rs           # the dashboard: event loop, focus, keys, panels, popups
+        ├── dashboard.rs     # the lists, the details card, the status and key bars
+        ├── console.rs       # serial output sanitising and the console pane
+        ├── actions.rs       # background work: load, start, stop, serial console, VNC, clipboard
+        ├── panel.rs         # the contract between the dashboard and its forms and dialogs
+        ├── events.rs        # task results and the event types
+        ├── widgets.rs       # text input, selector, list cursor, spinner, text helpers
+        ├── theme.rs         # the palette
+        ├── popups.rs        # confirmations, long errors, the key help
+        ├── setup.rs         # first-run wizard
+        ├── forms/           # create, edit, new VM from template, save as template
+        └── dialogs/         # USB passthrough, ISO hot-plug, the ISO picker
 ```

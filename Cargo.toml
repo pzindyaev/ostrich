@@ -1,0 +1,43 @@
+[package]
+name = "ostrich"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A terminal dashboard for managing QEMU virtual machines"
+license = "MIT"
+repository = "https://github.com/pzindyaev/ostrich"
+readme = "README.md"
+keywords = ["qemu", "tui", "virtual-machine", "ratatui"]
+categories = ["command-line-utilities", "virtualization"]
+build = "build.rs"
+
+[[bin]]
+name = "ostrich"
+path = "src/main.rs"
+
+[lib]
+name = "ostrich"
+path = "src/lib.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+nix = { version = "0.30", features = ["signal", "process", "fs"] }
+anyhow = "1"
+unicode-width = "0.2"
+regex = "1"
+glob = "0.3"
+which = "7"
+fastrand = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
