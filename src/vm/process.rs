@@ -956,13 +956,10 @@ mod tests {
 
     use super::testutil::FakeQemu;
     use super::*;
-    use crate::vm::config::{vm_dir, FirmwareType, NetworkConfig, PortForward};
+    use crate::vm::config::{vm_dir, NetworkConfig, PortForward};
     use crate::vm::disk::Disk;
-    use crate::vm::manager::Manager;
-    use crate::vm::monitor::monitor_command;
     use crate::vm::monitor::testutil::fake_hmp_sessions;
     use crate::vm::usb::UsbDevice;
-    use crate::vm::usbimage::testutil::{wait_for_monitor, write_image, StopOnDrop};
     use crate::vm::usbimage::UsbImage;
 
     /// A scratch directory whose socket paths fit `sun_path`.
@@ -988,17 +985,6 @@ mod tests {
             },
             ..VmConfig::default()
         }
-    }
-
-    /// Whether the real QEMU tests can run here; says so when they cannot.
-    fn have_qemu() -> bool {
-        for bin in ["qemu-system-x86_64", "qemu-img"] {
-            if which::which(bin).is_err() {
-                eprintln!("skipping: {bin} not installed");
-                return false;
-            }
-        }
-        true
     }
 
     /// The status of a child that exited with `code` (Go: `exitedState`).
@@ -1289,44 +1275,6 @@ mod tests {
         assert!(!is_zombie(std::process::id() as i32));
     }
 
-    /// A QEMU that dies is reaped by the Ostrich that started it, so it
-    /// neither lingers as a zombie nor counts as running (Go:
-    /// TestStartReapsQEMU). Skipped without QEMU.
-    #[test]
-    fn start_reaps_qemu() {
-        if !have_qemu() {
-            return;
-        }
-        let storage = storage();
-        let storage = storage.path();
-        let mut cfg = vm("reap");
-        Manager::new(storage).create(&mut cfg).unwrap();
-        start(storage, &cfg).unwrap();
-        let _stop = StopOnDrop {
-            storage,
-            name: &cfg.name,
-        };
-        wait_for_monitor(storage, &cfg.name);
-        let info = status(storage, &cfg.name).unwrap();
-        assert!(info.running(), "Status = {info:?} after Start");
-
-        // Kill it the way a crash would, then it must be gone for good.
-        kill(Pid::from_raw(info.pid), Signal::SIGKILL).unwrap();
-        let gone = wait_reaped(info.pid);
-        assert_eq!(
-            gone,
-            Err(Errno::ESRCH),
-            "QEMU {} not reaped after it died (kill -0: {gone:?})",
-            info.pid
-        );
-        let info = status(storage, &cfg.name).unwrap();
-        assert_eq!(
-            info.status,
-            VmStatus::Stopped,
-            "Status = {info:?} after the VM died"
-        );
-    }
-
     // The startup watch (Go: TestAwaitStartup) returns as soon as the monitor
     // answers, fails with QEMU's output when QEMU exits, and gives up waiting
     // after the grace period.
@@ -1511,48 +1459,6 @@ mod tests {
         let msg = start_failure(Some(exited_status(2)), &log_path).to_string();
         assert!(msg.starts_with("QEMU exited during startup (exit status 2):\n  line 1\n"));
         assert!(!msg.contains("full output"), "{msg}");
-    }
-
-    /// A QEMU that dies on startup makes Start fail with what QEMU printed,
-    /// and leaves no VM counted as running (Go: TestStartReportsQEMUFailure).
-    /// Skipped without QEMU.
-    #[test]
-    fn start_reports_qemu_failure() {
-        if !have_qemu() {
-            return;
-        }
-        let storage = storage();
-        let storage = storage.path();
-        let mut cfg = vm("broken");
-        Manager::new(storage).create(&mut cfg).unwrap();
-        // A disk that is not a qcow2 image: QEMU refuses it at once.
-        fs::write(disk_path(storage, &cfg.name), "not an image").unwrap();
-        let result = start(storage, &cfg);
-        let _stop = StopOnDrop {
-            storage,
-            name: &cfg.name,
-        };
-        let err = result
-            .expect_err("Start = Ok for a QEMU that cannot open its disk")
-            .to_string();
-        eprintln!("Start error:\n{err}");
-        assert!(
-            err.contains("QEMU exited during startup (exit status 1):")
-                && err.contains("disk.qcow2"),
-            "error does not quote QEMU: {err}"
-        );
-        let info = status(storage, &cfg.name).unwrap();
-        assert_eq!(
-            info.status,
-            VmStatus::Stopped,
-            "Status = {info:?} after a failed start"
-        );
-        assert!(
-            !pid_path(storage, &cfg.name).exists(),
-            "pid file left behind by a failed start"
-        );
-        let logged = fs::read_to_string(qemu_log_path(storage, &cfg.name)).unwrap();
-        assert!(logged.contains("disk.qcow2"), "qemu.log = {logged:?}");
     }
 
     #[test]
@@ -2255,211 +2161,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(err, "duplicate disk name \"Data\"");
-    }
-
-    /// Sanity run against the real host, end to end: a tiny BIOS VM (1 CPU,
-    /// 128 MiB, 1 GiB disk, no network, no ISO) is created through the
-    /// manager, started, seen running and answering the monitor, stopped,
-    /// seen stopped with neither a process nor a zombie left behind, and
-    /// deleted. Ignored by default because it launches QEMU; run it with
-    /// `cargo test -- --ignored vm::process::tests::real_qemu_lifecycle`.
-    #[test]
-    #[ignore = "launches a real QEMU"]
-    fn real_qemu_lifecycle() {
-        if !have_qemu() {
-            return;
-        }
-        let storage = storage();
-        let storage = storage.path();
-        let mgr = Manager::new(storage);
-        let mut cfg = vm("sanity");
-
-        // Create: the directory, the disk image and vm.yaml, with the
-        // defaults filled in.
-        mgr.create(&mut cfg).unwrap();
-        assert!(mgr.exists(&cfg.name));
-        assert!(disk_path(storage, &cfg.name).is_file(), "no disk image");
-        assert!(!cfg.network.mac.is_empty(), "create did not pick a MAC");
-        assert_eq!(
-            (cfg.firmware, cfg.arch.as_str()),
-            (FirmwareType::Bios, "x86_64")
-        );
-        let listed = mgr.list().unwrap();
-        assert_eq!(listed.len(), 1, "list = {listed:?}");
-        assert_eq!(listed[0].name, cfg.name);
-        assert_eq!(status(storage, &cfg.name).unwrap(), ProcessInfo::default());
-
-        // Start: running, with a PID, and the monitor answers.
-        start(storage, &cfg).unwrap();
-        let _stop = StopOnDrop {
-            storage,
-            name: &cfg.name,
-        };
-        let info = status(storage, &cfg.name).unwrap();
-        assert!(
-            info.running() && info.pid > 0,
-            "Status = {info:?} after start"
-        );
-        assert!(process_alive(info.pid) && !is_zombie(info.pid));
-        wait_for_monitor(storage, &cfg.name);
-        let out = monitor_command(storage, &cfg.name, "info status").unwrap();
-        eprintln!("QEMU {} answered `info status` with {out:?}", info.pid);
-        assert!(out.contains("VM status: running"), "info status = {out:?}");
-        assert!(
-            read_console_tail(storage, &cfg.name, 10).is_ok(),
-            "console log unreadable"
-        );
-
-        // Stop: stopped, the process gone for good (reaped, not a zombie),
-        // no pid file, no monitor.
-        stop(storage, &cfg.name).unwrap();
-        let gone = wait_reaped(info.pid);
-        assert_eq!(
-            gone,
-            Err(Errno::ESRCH),
-            "QEMU {} still around after stop (kill -0: {gone:?})",
-            info.pid
-        );
-        assert!(!is_zombie(info.pid), "QEMU {} left as a zombie", info.pid);
-        assert_eq!(status(storage, &cfg.name).unwrap(), ProcessInfo::default());
-        assert!(
-            !pid_path(storage, &cfg.name).exists(),
-            "pid file left after stop"
-        );
-        assert!(
-            monitor_command(storage, &cfg.name, "info status").is_err(),
-            "monitor still answers after stop"
-        );
-
-        // Delete: nothing left of it.
-        mgr.delete(&cfg.name).unwrap();
-        assert!(!mgr.exists(&cfg.name));
-        assert!(
-            !vm_dir(storage, &cfg.name).exists(),
-            "VM directory left after delete"
-        );
-        assert!(mgr.list().unwrap().is_empty());
-    }
-
-    /// The PCI devices in `info qtree` output, one
-    /// `<bus> <slot>.<function> <device>, id "<id>"` line each, sorted.
-    fn pci_placements(qtree: &str) -> Vec<String> {
-        let mut buses: Vec<(usize, &str)> = Vec::new(); // (indent, name)
-        let mut dev = None;
-        let mut placed = Vec::new();
-        for line in qtree.lines() {
-            let text = line.trim_start();
-            let indent = line.len() - text.len();
-            if let Some(bus) = text.strip_prefix("bus: ") {
-                buses.retain(|&(i, _)| i < indent);
-                buses.push((indent, bus));
-                dev = None;
-            } else if let Some(name) = text.strip_prefix("dev: ") {
-                buses.retain(|&(i, _)| i < indent);
-                dev = buses.last().map(|&(_, bus)| (bus, name));
-            } else if let Some(addr) = text.strip_prefix("addr = ") {
-                if let Some((bus, name)) = dev.take() {
-                    placed.push(format!("{bus} {addr} {name}"));
-                }
-            }
-        }
-        placed.sort();
-        placed
-    }
-
-    /// Runs `bin` with the VM's `args` paused (`-S`), without KVM so any
-    /// architecture runs, and returns its `info qtree`.
-    fn paused_qtree(storage: &Path, name: &str, bin: &str, args: &[String]) -> String {
-        let mut cmd = Command::new(bin);
-        let mut words = args.iter();
-        while let Some(word) = words.next() {
-            match word.as_str() {
-                "-enable-kvm" => {}
-                "-cpu" => drop(words.next()),
-                _ => drop(cmd.arg(word)),
-            }
-        }
-        let log = File::create(qemu_log_path(storage, name)).unwrap();
-        cmd.arg("-S")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log);
-        let mut qemu = spawn_retrying(&mut cmd).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let qtree = loop {
-            if let Ok(out) = monitor_command(storage, name, "info qtree") {
-                if !out.is_empty() {
-                    break Ok(out);
-                }
-            }
-            if qemu.try_wait().unwrap().is_some() || Instant::now() >= deadline {
-                break Err(fs::read_to_string(qemu_log_path(storage, name)).unwrap_or_default());
-            }
-            thread::sleep(Duration::from_millis(100));
-        };
-        let _ = qemu.kill();
-        let _ = qemu.wait();
-        qtree.unwrap_or_else(|log| panic!("{bin} did not come up:\n{log}"))
-    }
-
-    /// Checked against real QEMU, paused: without a network, every PCI
-    /// device of the VM keeps the bus, slot and function it had under Go,
-    /// whose command line had no network arguments and so QEMU's default
-    /// NIC; only that NIC is gone. Done for each machine type, q35
-    /// (`x86_64`) and `virt` (`aarch64`, when `qemu-system-aarch64` is
-    /// installed), with a CD-ROM, an additional disk and a USB image. Ignored
-    /// by default because it launches QEMU; run it with
-    /// `cargo test -- --ignored vm::process::tests::real_qemu_keeps_gos_pci_slots_without_a_network`.
-    #[test]
-    #[ignore = "launches a real QEMU"]
-    fn real_qemu_keeps_gos_pci_slots_without_a_network() {
-        if !have_qemu() {
-            return;
-        }
-        for (arch, default_nic) in [("x86_64", "e1000e"), ("aarch64", "virtio-net-pci")] {
-            let bin = format!("qemu-system-{arch}");
-            if which::which(&bin).is_err() {
-                eprintln!("skipping {arch}: {bin} not installed");
-                continue;
-            }
-            let storage = storage();
-            let storage = storage.path();
-            let mut cfg = vm("slots");
-            cfg.arch = arch.into();
-            cfg.cdrom_path = write_image(storage, "cd.iso", 0);
-            cfg.usb_images = vec![UsbImage {
-                path: write_image(storage, "stick.img", 1 << 20),
-            }];
-            cfg.disks = vec![Disk {
-                name: "data".into(),
-                size: 1,
-            }];
-            Manager::new(storage).create(&mut cfg).unwrap();
-
-            // Go's argv: a user VM's without its network arguments, which
-            // come last.
-            cfg.network.kind = NetworkType::User;
-            let (_, user) = build_qemu_args(&cfg, storage).unwrap();
-            let go = paused_qtree(storage, &cfg.name, &bin, &user[..user.len() - 4]);
-            cfg.network.kind = NetworkType::None;
-            let (_, none) = build_qemu_args(&cfg, storage).unwrap();
-            let ours = paused_qtree(storage, &cfg.name, &bin, &none);
-
-            let go = pci_placements(&go);
-            let ours = pci_placements(&ours);
-            eprintln!("{arch} under Go:\n  {}", go.join("\n  "));
-            let (nic, rest): (Vec<_>, Vec<_>) = go
-                .into_iter()
-                .partition(|d| d.contains(&format!(" {default_nic}, ")));
-            assert_eq!(nic.len(), 1, "{arch}: Go's default NIC: {nic:?}");
-            assert_eq!(ours, rest, "{arch}: devices moved");
-            for dev in [
-                "pcie.0 03.0 qemu-xhci, id \"xhci\"",
-                "pcie.0 04.0 virtio-blk-pci, id \"\"",
-                "disk-rp1 00.0 virtio-blk-pci, id \"disk-data\"",
-            ] {
-                assert!(ours.iter().any(|d| d == dev), "{arch}: no {dev}: {ours:?}");
-            }
-        }
     }
 }

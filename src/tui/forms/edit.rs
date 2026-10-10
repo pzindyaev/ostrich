@@ -1778,6 +1778,10 @@ mod tests {
     /// Port of TestEditFormExtraDisks: a real update of a BIOS VM.
     #[test]
     fn extra_disks() {
+        if which::which("qemu-img").is_err() {
+            eprintln!("skipping: qemu-img not installed");
+            return;
+        }
         let h = Harness::new();
         let storage = h.mgr.storage().to_path_buf();
         let mut cfg = bios_vm("deb", 1, vec![disk("data", 1), disk("scratch", 1)]);

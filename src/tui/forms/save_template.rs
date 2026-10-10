@@ -599,6 +599,10 @@ mod tests {
     /// Port of TestSaveTemplateScreen: a real template round trip.
     #[test]
     fn save_template_round_trip() {
+        if which::which("qemu-img").is_err() {
+            eprintln!("skipping: qemu-img not installed");
+            return;
+        }
         let h = Harness::new();
         let storage = h.mgr.storage().to_path_buf();
         let cfg = deb();
