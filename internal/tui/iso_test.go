@@ -3,12 +3,38 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/pzindyaev/ostrich/internal/config"
 	"github.com/pzindyaev/ostrich/internal/vm"
 )
+
+// isolateConfig points the app config at a fresh home with the storage path
+// set, so the images the tests use are remembered there and nowhere else.
+func isolateConfig(t *testing.T, storage string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	if err := config.Save(&config.AppConfig{VMStoragePath: storage}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pickNew moves the open picker's cursor to its New path row, types path
+// there and presses Enter.
+func pickNew(t *testing.T, m ISOModel, path string) (ISOModel, tea.Cmd) {
+	t.Helper()
+	if m.prompt == promptNone {
+		t.Fatal("the picker is not open")
+	}
+	for !m.picker.onInput() {
+		m, _ = m.Update(key("down"))
+	}
+	m = typeKeys(m, path)
+	return m.Update(key("enter"))
+}
 
 // applyISO runs the Cmd returned by an attach/detach and feeds its message back.
 func applyISO(t *testing.T, m ISOModel, cmd tea.Cmd) ISOModel {
@@ -36,6 +62,7 @@ func typeKeys(m ISOModel, s string) ISOModel {
 
 func TestISOScreenAttachDetach(t *testing.T) {
 	storage, isos := t.TempDir(), t.TempDir()
+	isolateConfig(t, storage)
 	present := filepath.Join(isos, "virtio-win.iso")
 	if err := os.WriteFile(present, make([]byte, 3<<20), 0o644); err != nil {
 		t.Fatal(err)
@@ -57,13 +84,17 @@ func TestISOScreenAttachDetach(t *testing.T) {
 	}
 	t.Log("\n" + view)
 
-	// Attach by typing a path.
+	// Attach by typing a path in the picker. Nothing was used before, but
+	// the VM's own missing image is listed, as this VM has it.
 	m, _ = m.Update(key("a"))
-	if m.prompt != promptUSBImage || !strings.Contains(m.View(), "Image path") {
-		t.Fatalf("a should open the path entry:\n%s", m.View())
+	if m.prompt != promptUSBImage || !strings.Contains(m.View(), "USB drive to attach") || !strings.Contains(m.View(), "New path") {
+		t.Fatalf("a should open the picker:\n%s", m.View())
 	}
-	m = typeKeys(m, present)
-	m, cmd := m.Update(key("enter"))
+	if len(m.picker.entries) != 1 || m.picker.entries[0].path != missing || m.picker.cursor != 0 {
+		t.Fatalf("picker entries = %+v cursor=%d", m.picker.entries, m.picker.cursor)
+	}
+	t.Log("\n" + m.View())
+	m, cmd := pickNew(t, m, present)
 	m = applyISO(t, m, cmd)
 	if m.prompt != promptNone || len(m.cfg.USBImages) != 2 || m.cfg.USBImages[1].Path != present {
 		t.Fatalf("after attach: prompt=%v images=%+v", m.prompt, m.cfg.USBImages)
@@ -75,6 +106,9 @@ func TestISOScreenAttachDetach(t *testing.T) {
 	if !strings.Contains(m.notice, "attached virtio-win.iso") || !strings.Contains(m.notice, "next start") {
 		t.Errorf("notice = %q", m.notice)
 	}
+	if got := config.RecentISOs(); !reflect.DeepEqual(got, []string{present}) {
+		t.Errorf("remembered = %v, want the attached image", got)
+	}
 	m, _ = m.Update(m.Init()())
 	view = m.View()
 	if !strings.Contains(view, "● 3 MiB") {
@@ -82,22 +116,23 @@ func TestISOScreenAttachDetach(t *testing.T) {
 	}
 	t.Log("\n" + view)
 
-	// The same image twice, and a file that is not there, are refused.
+	// The same image twice, and a file that is not there, are refused and
+	// the picker stays open. The remembered image is now listed first.
 	m, _ = m.Update(key("a"))
-	m = typeKeys(m, present)
-	m, _ = m.Update(key("enter"))
-	if !strings.Contains(m.err, "already attached") || m.prompt != promptUSBImage {
-		t.Errorf("duplicate: err=%q prompt=%v", m.err, m.prompt)
+	if len(m.picker.entries) != 2 || m.picker.entries[0].path != present || m.picker.entries[1].path != missing {
+		t.Fatalf("picker entries = %+v", m.picker.entries)
 	}
-	m.input.SetValue("")
-	m = typeKeys(m, filepath.Join(isos, "nope.iso"))
 	m, _ = m.Update(key("enter"))
-	if !strings.Contains(m.err, "not found") {
-		t.Errorf("missing: err=%q", m.err)
+	if !strings.Contains(m.picker.err, "already attached") || m.prompt != promptUSBImage {
+		t.Errorf("duplicate: err=%q prompt=%v", m.picker.err, m.prompt)
+	}
+	m, _ = pickNew(t, m, filepath.Join(isos, "nope.iso"))
+	if !strings.Contains(m.picker.err, "not found") || m.prompt != promptUSBImage {
+		t.Errorf("missing: err=%q prompt=%v", m.picker.err, m.prompt)
 	}
 	m, _ = m.Update(key("esc"))
 	if m.prompt != promptNone {
-		t.Error("esc should cancel the entry")
+		t.Error("esc should close the picker")
 	}
 
 	// Detach the missing one (row 0) with Space; the present one stays.
@@ -126,6 +161,7 @@ func TestISOScreenAttachDetach(t *testing.T) {
 
 func TestISOScreenBootISO(t *testing.T) {
 	storage, isos := t.TempDir(), t.TempDir()
+	isolateConfig(t, storage)
 	disc := filepath.Join(isos, "debian.iso")
 	if err := os.WriteFile(disc, make([]byte, 2<<20), 0o644); err != nil {
 		t.Fatal(err)
@@ -150,10 +186,14 @@ func TestISOScreenBootISO(t *testing.T) {
 		t.Errorf("eject on empty drive: cmd=%v notice=%q", cmd, m.notice)
 	}
 
-	// Put a disc in.
+	// Put a disc in. Nothing was used before, so the picker opens on its
+	// New path row.
 	m, _ = m.Update(key("c"))
-	if m.prompt != promptBootISO || !strings.Contains(m.View(), "Boot ISO path") {
-		t.Fatalf("c should open the boot ISO prompt:\n%s", m.View())
+	if m.prompt != promptBootISO || !strings.Contains(m.View(), "Boot ISO (CD-ROM drive)") || !strings.Contains(m.View(), "New path") {
+		t.Fatalf("c should open the picker:\n%s", m.View())
+	}
+	if len(m.picker.entries) != 0 || !m.picker.onInput() {
+		t.Fatalf("picker entries = %+v cursor=%d", m.picker.entries, m.picker.cursor)
 	}
 	m = typeKeys(m, disc)
 	m, cmd = m.Update(key("enter"))
@@ -174,12 +214,16 @@ func TestISOScreenBootISO(t *testing.T) {
 	}
 	t.Log("\n" + view)
 
-	// A path that is not there is refused and the prompt stays open.
+	// A path that is not there is refused and the picker stays open. The
+	// disc is listed now, in use by this VM.
 	m, _ = m.Update(key("c"))
-	m = typeKeys(m, filepath.Join(isos, "nope.iso"))
-	m, _ = m.Update(key("enter"))
-	if !strings.Contains(m.err, "not found") || m.prompt != promptBootISO {
-		t.Errorf("missing: err=%q prompt=%v", m.err, m.prompt)
+	if len(m.picker.entries) != 1 || m.picker.entries[0].path != disc || !reflect.DeepEqual(m.picker.entries[0].usedBy, []string{"t"}) {
+		t.Fatalf("picker entries = %+v", m.picker.entries)
+	}
+	t.Log("\n" + m.View())
+	m, _ = pickNew(t, m, filepath.Join(isos, "nope.iso"))
+	if !strings.Contains(m.picker.err, "not found") || m.prompt != promptBootISO {
+		t.Errorf("missing: err=%q prompt=%v", m.picker.err, m.prompt)
 	}
 	m, _ = m.Update(key("esc"))
 
@@ -194,6 +238,20 @@ func TestISOScreenBootISO(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "(empty)") {
 		t.Errorf("view after eject:\n%s", m.View())
+	}
+
+	// The ejected disc is still remembered: put it back by picking it.
+	if got := config.RecentISOs(); !reflect.DeepEqual(got, []string{disc}) {
+		t.Fatalf("remembered = %v", got)
+	}
+	m, _ = m.Update(key("c"))
+	if len(m.picker.entries) != 1 || m.picker.entries[0].usedBy != nil || m.picker.cursor != 0 {
+		t.Fatalf("picker entries = %+v cursor=%d", m.picker.entries, m.picker.cursor)
+	}
+	m, cmd = m.Update(key("enter"))
+	m = applyISO(t, m, cmd)
+	if m.cfg.CDROMPath != disc || !strings.Contains(m.notice, "inserted debian.iso") {
+		t.Errorf("after picking: cdrom=%q notice=%q", m.cfg.CDROMPath, m.notice)
 	}
 }
 

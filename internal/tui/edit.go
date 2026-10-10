@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pzindyaev/ostrich/internal/config"
 	"github.com/pzindyaev/ostrich/internal/vm"
 )
 
@@ -21,7 +22,7 @@ const (
 	editRAM
 	editDisk
 	editDisks
-	editISO
+	editISO      // picker: Enter opens the ISO dialog
 	editFirmware // selector
 	editTPM      // selector
 	editNetwork  // selector (no text input)
@@ -54,7 +55,7 @@ var editHelp = [editFieldCount]string{
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Can only grow, and the VM must be stopped. The guest must extend its own partitions",
 	"Comma-separated [name:]size in GiB, e.g. data:50, scratch:10. A new disk is hot-plugged into a running VM and arrives blank: partition and format it in the guest. Grow or remove only when stopped; removing deletes the image",
-	"Full path to an ISO image to boot from, or leave blank to boot from disk; a running VM gets the new disc right away",
+	"Enter opens the images used before, with a row to type the path of a new one; (none) boots from disk. A running VM gets the new disc right away",
 	"h/l/←/→ to select. VM must be stopped; turning Secure Boot on rebuilds the UEFI NVRAM (boot entries)",
 	"h/l/←/→ to select. Emulated TPM 2.0 via swtpm — required by Windows 11",
 	"h/l/←/→ to select: user (NAT) · tap (bridge) · none",
@@ -71,7 +72,7 @@ func (f editField) selector() bool {
 
 // isText reports whether the field is backed by a text input.
 func (f editField) isText() bool {
-	return !f.selector() && f != editSave
+	return !f.selector() && f != editSave && f != editISO
 }
 
 type vmUpdatedMsg struct{ name string }
@@ -79,12 +80,15 @@ type vmUpdateErrMsg struct{ err error }
 
 // EditVMModel is a single-page form for editing an existing VM's properties.
 type EditVMModel struct {
-	orig   *vm.VMConfig
-	field  editField
-	inputs [editFieldCount]textinput.Model // entries for non-text fields are unused
-	fwIdx  int
-	tpmIdx int
-	netIdx int
+	orig    *vm.VMConfig
+	field   editField
+	inputs  [editFieldCount]textinput.Model // entries for non-text fields are unused
+	fwIdx   int
+	tpmIdx  int
+	netIdx  int
+	iso     string    // the boot ISO, "" to boot from disk
+	picker  isoPicker // the ISO dialog, shown instead of the form while picking
+	picking bool
 	// bridgeHint says what the host lacks for tap networking, "" when it is
 	// ready or another network is picked.
 	bridgeHint string
@@ -108,7 +112,6 @@ func NewEditVMModel(mgr *vm.Manager, cfg *vm.VMConfig, width, height int) EditVM
 		editRAM:      strconv.Itoa(cfg.RAM),
 		editDisk:     strconv.Itoa(cfg.DiskSize),
 		editDisks:    vm.FormatDisks(cfg.Disks),
-		editISO:      cfg.CDROMPath,
 		editMAC:      cfg.Network.MAC,
 		editForwards: vm.FormatPortForwards(cfg.Network.PortForwards),
 		editVNC:      strconv.Itoa(cfg.VNCPort),
@@ -140,6 +143,7 @@ func NewEditVMModel(mgr *vm.Manager, cfg *vm.VMConfig, width, height int) EditVM
 		fwIdx:      firmwareIndex(cfg),
 		tpmIdx:     boolIndex(cfg.TPM),
 		netIdx:     netIdx,
+		iso:        cfg.CDROMPath,
 		bridgeHint: bridgeHintFor(networkChoices[netIdx]),
 		running:    info.Status == vm.StatusRunning,
 		mgr:        mgr,
@@ -162,16 +166,50 @@ func (m EditVMModel) Update(msg tea.Msg) (EditVMModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.picking {
+			return m.updatePicker(msg)
+		}
 		return m.handleKey(msg)
 	}
 
 	// Forward non-key messages to the active text input (if any).
+	if m.picking {
+		return m.updatePicker(msg)
+	}
 	if m.field.isText() {
 		var cmd tea.Cmd
 		m.inputs[m.field], cmd = m.inputs[m.field].Update(msg)
 		return m, cmd
 	}
 	return m, nil
+}
+
+// openPicker shows the ISO dialog with the cursor on the current boot ISO.
+func (m EditVMModel) openPicker() (EditVMModel, tea.Cmd) {
+	m.picking = true
+	m.err = ""
+	var cmd tea.Cmd
+	m.picker, cmd = newISOPicker("(none) — boot from disk", m.iso, isoEntries(m.mgr.StoragePath))
+	return m, cmd
+}
+
+// updatePicker forwards a message to the ISO dialog and takes its pick.
+func (m EditVMModel) updatePicker(msg tea.Msg) (EditVMModel, tea.Cmd) {
+	var (
+		cmd tea.Cmd
+		out isoOutcome
+	)
+	m.picker, cmd, out = m.picker.Update(msg)
+	switch {
+	case out.cancelled:
+		m.picking = false
+		return m, nil
+	case out.picked:
+		m.iso = out.path
+		m.picking = false
+		return m, nil
+	}
+	return m, cmd
 }
 
 func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
@@ -187,8 +225,11 @@ func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
 		return m.save()
 
 	case "enter":
-		if m.field == editSave {
+		switch m.field {
+		case editSave:
 			return m.save()
+		case editISO:
+			return m.openPicker()
 		}
 		return m.moveTo((m.field + 1) % editFieldCount)
 
@@ -214,6 +255,9 @@ func (m EditVMModel) handleKey(msg tea.KeyMsg) (EditVMModel, tea.Cmd) {
 		m.cycle(-1)
 
 	case "l", "right":
+		if m.field == editISO {
+			return m.openPicker()
+		}
 		m.cycle(1)
 	}
 
@@ -315,7 +359,7 @@ func (m EditVMModel) buildConfig() (*vm.VMConfig, editField, error) {
 		return nil, editDisks, fmt.Errorf("stop the VM before resizing or removing disks")
 	}
 
-	cfg.CDROMPath = m.value(editISO)
+	cfg.CDROMPath = m.iso
 	if cfg.CDROMPath != "" {
 		if st, err := os.Stat(cfg.CDROMPath); err != nil || st.IsDir() {
 			return nil, editISO, fmt.Errorf("ISO file not found: %s", cfg.CDROMPath)
@@ -368,6 +412,7 @@ func (m EditVMModel) save() (EditVMModel, tea.Cmd) {
 	m.armed, m.armedValue, m.warn = false, "", ""
 
 	oldName := m.orig.Name
+	newISO := cfg.CDROMPath != "" && cfg.CDROMPath != m.orig.CDROMPath
 	swapISO := m.running && cfg.CDROMPath != m.orig.CDROMPath
 	// A disk added to a running VM is hot-plugged once its image exists.
 	var hotplug []int
@@ -386,6 +431,9 @@ func (m EditVMModel) save() (EditVMModel, tea.Cmd) {
 	return m, func() tea.Msg {
 		if err := m.mgr.Update(oldName, cfg); err != nil {
 			return vmUpdateErrMsg{err}
+		}
+		if newISO {
+			_ = config.RememberISO(cfg.CDROMPath) // for the picker; losing it costs nothing
 		}
 		// What can change under a running VM goes through the monitor on the
 		// spot: the CD-ROM drive takes the new disc (or none), new disks are
@@ -429,6 +477,17 @@ func (m EditVMModel) View() string {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
+	if m.picking {
+		b.WriteString(styleLabel.Render("  Boot ISO"))
+		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("  an image used before, or the path of a new one; ~ is your home directory. (none) boots from disk"))
+		b.WriteString("\n\n")
+		b.WriteString(m.picker.View(m.width))
+		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("  " + m.picker.keyHelp("pick") + "   Esc: back to the form"))
+		return lipgloss.NewStyle().Width(m.width).Render(b.String())
+	}
+
 	if m.running {
 		b.WriteString(styleRunning.Render("  ● running"))
 		b.WriteString(styleHelp.Render(" — changes take effect on next start; name, disk sizes, disk removal and firmware are locked; new disks are hot-plugged"))
@@ -457,9 +516,12 @@ func (m EditVMModel) View() string {
 		}
 		b.WriteString(marker + label + " ")
 
-		if f.selector() {
+		switch {
+		case f.selector():
 			b.WriteString(renderChoices(m.choices(f)))
-		} else {
+		case f == editISO:
+			b.WriteString(ifEmpty(m.iso, styleHelp.Render("(none)")))
+		default:
 			b.WriteString(m.inputs[f].View())
 		}
 		b.WriteString("\n")
@@ -484,6 +546,8 @@ func (m EditVMModel) View() string {
 	keyHelp := "Tab/↓: next   Shift+Tab/↑: back   Ctrl-s: save   Esc: cancel"
 	if m.field.selector() {
 		keyHelp = "h/l/←/→: select   j/↓: next   k/↑: back   Ctrl-s: save   Esc: cancel"
+	} else if m.field == editISO {
+		keyHelp = "Enter/l: pick ISO   j/↓: next   k/↑: back   Ctrl-s: save   Esc: cancel"
 	} else if m.field == editSave {
 		keyHelp = "Enter: save   k/Shift+Tab: back   Esc: cancel"
 	}

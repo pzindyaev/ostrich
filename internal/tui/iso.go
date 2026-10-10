@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pzindyaev/ostrich/internal/config"
 	"github.com/pzindyaev/ostrich/internal/vm"
 )
 
@@ -29,7 +29,7 @@ type isoAppliedMsg struct {
 	err    error
 }
 
-// isoPrompt says what the path entry, when open, is for.
+// isoPrompt says what the ISO picker, when open, is for.
 type isoPrompt int
 
 const (
@@ -43,7 +43,8 @@ const isoPathWidth = 48
 // ISOModel lets the user swap or eject the boot ISO in a VM's CD-ROM drive
 // and attach disk images (ISOs) to it as read-only USB drives. Each change is
 // saved to vm.yaml immediately and, for a running VM, applied through the
-// QEMU monitor on the spot.
+// QEMU monitor on the spot. An image is chosen in the ISO picker, which
+// offers the ones used before and takes the path of a new one.
 type ISOModel struct {
 	cfg         *vm.VMConfig
 	storagePath string
@@ -55,22 +56,18 @@ type ISOModel struct {
 	err         string
 	notice      string
 	prompt      isoPrompt
-	input       textinput.Model
+	picker      isoPicker // open while prompt is not promptNone
 	width       int
 	height      int
 }
 
 // NewISOModel constructs the screen for cfg; the images are checked in Init.
 func NewISOModel(cfg *vm.VMConfig, storagePath string, width, height int) ISOModel {
-	t := textinput.New()
-	t.Prompt = ""
-	t.Placeholder = "/path/to/image.iso"
 	return ISOModel{
 		cfg:         cfg,
 		storagePath: storagePath,
 		cdrom:       vm.ImageStateOf(cfg.CDROMPath),
 		states:      vm.USBImageStates(cfg.USBImages),
-		input:       t,
 		width:       width,
 		height:      height,
 	}
@@ -116,15 +113,13 @@ func (m ISOModel) Update(msg tea.Msg) (ISOModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.prompt != promptNone {
-			return m.handlePromptKey(msg)
+			return m.updatePicker(msg)
 		}
 		return m.handleKey(msg)
 	}
 
 	if m.prompt != promptNone {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
+		return m.updatePicker(msg)
 	}
 	return m, nil
 }
@@ -184,44 +179,40 @@ func (m ISOModel) handleKey(msg tea.KeyMsg) (ISOModel, tea.Cmd) {
 func (m ISOModel) openPrompt(kind isoPrompt) (ISOModel, tea.Cmd) {
 	m.prompt = kind
 	m.err, m.notice = "", ""
-	m.input.SetValue("")
-	m.input.Width = max(20, m.width-20)
-	return m, m.input.Focus()
+	var cmd tea.Cmd
+	m.picker, cmd = newISOPicker("", "", isoEntries(m.storagePath))
+	return m, cmd
 }
 
-func (m ISOModel) handlePromptKey(msg tea.KeyMsg) (ISOModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+// updatePicker forwards a message to the open picker and acts on its pick:
+// the image goes into the drive or onto the USB bus, as the prompt says.
+func (m ISOModel) updatePicker(msg tea.Msg) (ISOModel, tea.Cmd) {
+	var (
+		cmd tea.Cmd
+		out isoOutcome
+	)
+	m.picker, cmd, out = m.picker.Update(msg)
+	switch {
+	case out.cancelled:
 		m.prompt = promptNone
-		m.input.Blur()
 		return m, nil
-	case "ctrl+c":
-		return m, tea.Quit
-	case "enter":
-		img, err := resolveImagePath(m.input.Value())
-		if err != nil {
-			m.err = err.Error()
-			return m, nil
-		}
-		kind := m.prompt
-		if kind == promptUSBImage {
-			for _, existing := range m.cfg.USBImages {
-				if existing.Path == img.Path {
-					m.err = fmt.Sprintf("%s is already attached to this VM", img.Path)
-					return m, nil
-				}
+	case !out.picked:
+		return m, cmd
+	}
+	kind := m.prompt
+	if kind == promptUSBImage {
+		for _, existing := range m.cfg.USBImages {
+			if existing.Path == out.path {
+				m.picker.err = fmt.Sprintf("%s is already attached to this VM", out.path)
+				return m, nil
 			}
 		}
-		m.prompt = promptNone
-		m.input.Blur()
-		if kind == promptBootISO {
-			return m.setBootISO(img.Path)
-		}
-		return m.attach(img)
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
+	m.prompt = promptNone
+	if kind == promptBootISO {
+		return m.setBootISO(out.path)
+	}
+	return m.attach(vm.USBImage{Path: out.path})
 }
 
 // resolveImagePath turns what the user typed into a validated image entry:
@@ -263,6 +254,9 @@ func (m ISOModel) setBootISO(path string) (ISOModel, tea.Cmd) {
 		if err := vm.SaveConfig(storagePath, &cfg); err != nil {
 			return isoAppliedMsg{err: fmt.Errorf("save VM config: %w", err)}
 		}
+		if path != "" {
+			_ = config.RememberISO(path) // for the picker; losing it costs nothing
+		}
 		if !running {
 			return isoAppliedMsg{cfg: &cfg, notice: what + " — takes effect on next start"}
 		}
@@ -283,6 +277,7 @@ func (m ISOModel) attach(img vm.USBImage) (ISOModel, tea.Cmd) {
 		if err := vm.SaveConfig(storagePath, cfg); err != nil {
 			return isoAppliedMsg{err: fmt.Errorf("save VM config: %w", err)}
 		}
+		_ = config.RememberISO(img.Path) // for the picker; losing it costs nothing
 		if !running {
 			return isoAppliedMsg{cfg: cfg, notice: fmt.Sprintf("attached %s — takes effect on next start", img.Label())}
 		}
@@ -348,6 +343,21 @@ func (m ISOModel) View() string {
 	}
 	b.WriteString("\n\n")
 
+	if m.prompt != promptNone {
+		label, hint, action := "  USB drive to attach", "an .iso (or any raw disk image) on the host: one used before, or the path of a new one; ~ is your home directory", "attach"
+		if m.prompt == promptBootISO {
+			label, hint, action = "  Boot ISO (CD-ROM drive)", "the ISO to put in the drive: one used before, or the path of a new one; ~ is your home directory", "insert"
+		}
+		b.WriteString(styleLabel.Render(label))
+		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("  " + hint))
+		b.WriteString("\n\n")
+		b.WriteString(m.picker.View(m.width))
+		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("  " + m.picker.keyHelp(action) + "   Esc: cancel"))
+		return lipgloss.NewStyle().Width(m.width).Render(b.String())
+	}
+
 	b.WriteString(styleLabel.Render("  Boot ISO (CD-ROM drive)"))
 	b.WriteString("\n\n")
 	if m.cfg.CDROMPath == "" {
@@ -371,18 +381,6 @@ func (m ISOModel) View() string {
 	}
 	b.WriteString("\n")
 
-	if m.prompt != promptNone {
-		label, hint := "  Image path     ", "an .iso (or any raw disk image) on the host; ~ is your home directory"
-		if m.prompt == promptBootISO {
-			label, hint = "  Boot ISO path  ", "the ISO to put in the CD-ROM drive; ~ is your home directory"
-		}
-		b.WriteString(styleLabel.Render(label))
-		b.WriteString(m.input.View())
-		b.WriteString("\n")
-		b.WriteString(styleHelp.Render("                 " + hint))
-		b.WriteString("\n\n")
-	}
-
 	if m.err != "" {
 		b.WriteString(styleError.Render(indent("✗ "+m.err, "  ")))
 		b.WriteString("\n\n")
@@ -392,12 +390,6 @@ func (m ISOModel) View() string {
 	}
 
 	keyHelp := "c: change boot ISO   e: eject   a: attach USB image   Space/Enter/d: detach   r: refresh   j/k: move   q/Esc: back"
-	switch m.prompt {
-	case promptBootISO:
-		keyHelp = "Enter: insert   Esc: cancel"
-	case promptUSBImage:
-		keyHelp = "Enter: attach   Esc: cancel"
-	}
 	b.WriteString(styleHelp.Render("  " + keyHelp))
 
 	return lipgloss.NewStyle().Width(m.width).Render(b.String())

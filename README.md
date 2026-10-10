@@ -23,6 +23,7 @@ A terminal UI for managing QEMU virtual machines, built with [Bubbletea](https:/
 - **VNC display** — optional VNC server per VM; press `v` to launch a VNC viewer (GUI)
 - **USB passthrough** — press `u` to pick host USB devices for a VM; hot-plugged into a running VM, attached at boot otherwise
 - **ISO hot-plug** — press `i` to swap or eject the boot ISO in a running VM's CD-ROM drive, and to attach ISOs (or any raw disk image) as read-only USB drives; applied in the running guest on the spot, at boot otherwise
+- **ISO picker** — every ISO input offers the images used before, with their size or whether the file has gone, and takes the path of a new one
 - **Multiple disks** — give a VM additional virtio disks when creating it or later in the edit form; a disk added to a running VM is hot-plugged on the spot — see [Additional Disks](#additional-disks)
 - **VM templates** — press `t` to freeze a stopped VM (disk, UEFI NVRAM, TPM state) as a template; `T` lists the templates, and new VMs are made from one with their own name, CPU, RAM and network — see [Templates](docs/USAGE.md#templates)
 - **UEFI, Secure Boot and TPM 2.0** — per-VM OVMF firmware with Microsoft's keys enrolled and an emulated TPM, which is what Windows 11 setup insists on — see [UEFI, Secure Boot and TPM 2.0](#uefi-secure-boot-and-tpm-20)
@@ -378,7 +379,7 @@ The platform key is generated for the VM and thrown away; the db gets *Microsoft
 1. Create the VM with at least 2 cores, 4096 MiB and 64 GiB, the Windows ISO as boot ISO, firmware `UEFI + Secure Boot`, TPM `enabled` and a VNC display. Windows 10 is happy with plain `BIOS`.
 2. Start it and press `v`. The ISO asks to *Press any key to boot from CD or DVD* — do so within a few seconds, or OVMF drops into its boot menu (pick the DVD-ROM there, or stop and start the VM).
 3. Windows setup has no drivers for the virtio disk and network card, so its disk list is empty. Get the [virtio-win driver ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso), copy its contents to a USB stick, pass the stick through with `u`, and choose *Load driver* → `viostor\w11\amd64` in setup. Install `NetKVM\w11\amd64` the same way from Device Manager after the first boot.
-4. Once installed, eject the boot ISO: press `i` on the running VM, then `e` (or clear the Boot ISO in the edit form).
+4. Once installed, eject the boot ISO: press `i` on the running VM, then `e` (or pick `(none)` for the Boot ISO in the edit form).
 
 ## Serial Console
 
@@ -513,11 +514,17 @@ Stored at `~/.config/ostrich/config.json`:
 
 ```json
 {
-  "vm_storage_path": "/home/user/VMs"
+  "vm_storage_path": "/home/user/VMs",
+  "recent_isos": [
+    "/home/user/iso/debian-12.3.0-amd64-netinst.iso",
+    "/home/user/iso/virtio-win.iso"
+  ]
 }
 ```
 
 To reconfigure the storage path, edit this file or delete it to trigger the first-run wizard again.
+
+`recent_isos` is the list the [ISO picker](docs/USAGE.md#choosing-an-iso) offers: every image put in a CD-ROM drive or attached as a USB drive is added at the top, the newest 20 are kept, and `d` in the picker takes one out. Images that a VM still has in its `vm.yaml` are offered whether or not they are in this list.
 
 ## Project Structure
 
@@ -550,5 +557,6 @@ ostrich/
         ├── edit.go          # VM edit form
         ├── usb.go           # USB passthrough picker
         ├── iso.go           # ISO hot-plug screen
+        ├── isopicker.go     # the ISO dialog behind every ISO input: images used before, or a new path
         └── detail.go        # VM detail + live console view
 ```

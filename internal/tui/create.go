@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pzindyaev/ostrich/internal/config"
 	"github.com/pzindyaev/ostrich/internal/vm"
 )
 
@@ -19,11 +20,11 @@ const (
 	stepRAM                        // text input 2
 	stepDisk                       // text input 3
 	stepDisks                      // text input 4
-	stepISO                        // text input 5
+	stepISO                        // picker
 	stepFirmware                   // selector
 	stepTPM                        // selector
 	stepNetwork                    // selector (no text input)
-	stepVNC                        // text input 6
+	stepVNC                        // text input 5
 	stepConfirm                    // confirmation
 	stepCount
 )
@@ -34,7 +35,7 @@ var stepLabels = []string{
 	"RAM (MiB)",
 	"Disk Size (GiB)",
 	"Additional disks (optional — leave blank for none)",
-	"Boot ISO path (optional — leave blank to skip)",
+	"Boot ISO (optional)",
 	"Firmware",
 	"TPM 2.0",
 	"Network type",
@@ -48,7 +49,7 @@ var stepHelp = []string{
 	"Memory in MiB, e.g. 2048 for 2 GiB",
 	"Disk size in GiB, e.g. 20",
 	"Comma-separated [name:]size in GiB, e.g. data:50, 100. Each arrives blank in the guest as /dev/disk/by-id/virtio-<name>: partition and format it there",
-	"Full path to an ISO image for initial install, or leave blank",
+	"An image used before, or the path of a new one on the last row (~ is your home directory); (none) to install from the disk. Enter picks it and moves on",
 	"h/l/←/→ to select. Windows 11 needs UEFI + Secure Boot and a TPM (next step); Linux boots with any",
 	"h/l/←/→ to select. Emulated by swtpm on the host — required by Windows 11",
 	"h/l/←/→ to select: user (NAT) · tap (bridge) · none",
@@ -135,10 +136,8 @@ func inputForStep(s createStep) int {
 		return 3
 	case stepDisks:
 		return 4
-	case stepISO:
-		return 5
 	case stepVNC:
-		return 6
+		return 5
 	default:
 		return -1
 	}
@@ -151,7 +150,9 @@ type vmCreateErrMsg struct{ err error }
 // CreateVMModel is a linear multi-step form for defining a new VM.
 type CreateVMModel struct {
 	step   createStep
-	inputs [7]textinput.Model // name, cpu, ram, disk, disks, iso, vnc
+	inputs [6]textinput.Model // name, cpu, ram, disk, disks, vnc
+	iso    string             // the boot ISO, "" for none
+	picker isoPicker          // the ISO dialog, which is the ISO step; fresh on each entry
 	fwIdx  int
 	tpmIdx int
 	netIdx int
@@ -166,9 +167,9 @@ type CreateVMModel struct {
 
 // NewCreateVMModel builds a CreateVMModel with sensible defaults.
 func NewCreateVMModel(mgr *vm.Manager, width, height int) CreateVMModel {
-	defaults := []string{"my-vm", "2", "2048", "20", "", "", "0"}
+	defaults := []string{"my-vm", "2", "2048", "20", "", "0"}
 
-	var inputs [7]textinput.Model
+	var inputs [6]textinput.Model
 	for i := range inputs {
 		t := textinput.New()
 		t.SetValue(defaults[i])
@@ -214,6 +215,9 @@ func (m CreateVMModel) Update(msg tea.Msg) (CreateVMModel, tea.Cmd) {
 }
 
 func (m CreateVMModel) handleKey(msg tea.KeyMsg) (CreateVMModel, tea.Cmd) {
+	if m.step == stepISO {
+		return m.handleISOKey(msg)
+	}
 	switch msg.String() {
 	case "esc":
 		return m, func() tea.Msg { return NavigateMsg{To: screenList} }
@@ -255,6 +259,35 @@ func (m CreateVMModel) handleKey(msg tea.KeyMsg) (CreateVMModel, tea.Cmd) {
 	return m, nil
 }
 
+// handleISOKey runs the ISO step, which is the picker: Enter takes its pick
+// and moves on, Tab moves on with the ISO as it is (or picks a path typed
+// but not entered yet), and the rest is the picker's own.
+func (m CreateVMModel) handleISOKey(msg tea.KeyMsg) (CreateVMModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		return m, func() tea.Msg { return NavigateMsg{To: screenList} }
+	case "ctrl+c":
+		return m, tea.Quit
+	case "shift+tab":
+		return m.retreat()
+	case "tab":
+		if !m.picker.typed() {
+			return m.advance()
+		}
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
+	}
+	var (
+		cmd tea.Cmd
+		out isoOutcome
+	)
+	m.picker, cmd, out = m.picker.Update(msg)
+	if out.picked {
+		m.iso = out.path
+		return m.advance()
+	}
+	return m, cmd
+}
+
 // cycle moves the current step's selector by delta, if it has one.
 func (m *CreateVMModel) cycle(delta int) {
 	switch m.step {
@@ -285,10 +318,7 @@ func (m CreateVMModel) advance() (CreateVMModel, tea.Cmd) {
 	}
 
 	m.step++
-	if idx := inputForStep(m.step); idx >= 0 {
-		return m, m.inputs[idx].Focus()
-	}
-	return m, nil
+	return m.enterStep()
 }
 
 func (m CreateVMModel) retreat() (CreateVMModel, tea.Cmd) {
@@ -300,6 +330,17 @@ func (m CreateVMModel) retreat() (CreateVMModel, tea.Cmd) {
 	}
 	m.step--
 	m.err = ""
+	return m.enterStep()
+}
+
+// enterStep readies what the step just moved to edits: its text input, or
+// for the ISO step a picker with the cursor on the ISO chosen so far.
+func (m CreateVMModel) enterStep() (CreateVMModel, tea.Cmd) {
+	if m.step == stepISO {
+		var cmd tea.Cmd
+		m.picker, cmd = newISOPicker("(none) — no boot ISO", m.iso, isoEntries(m.mgr.StoragePath))
+		return m, cmd
+	}
 	if idx := inputForStep(m.step); idx >= 0 {
 		return m, m.inputs[idx].Focus()
 	}
@@ -366,7 +407,7 @@ func (m CreateVMModel) buildConfig() (*vm.VMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	iso := strings.TrimSpace(m.inputs[inputForStep(stepISO)].Value())
+	iso := m.iso
 	vnc, _ := strconv.Atoi(strings.TrimSpace(m.inputs[inputForStep(stepVNC)].Value()))
 	netType := networkChoices[m.netIdx]
 	fw := firmwareChoices[m.fwIdx]
@@ -396,6 +437,9 @@ func (m CreateVMModel) createVM() (CreateVMModel, tea.Cmd) {
 		if err := m.mgr.Create(cfg); err != nil {
 			return vmCreateErrMsg{err}
 		}
+		if cfg.CDROMPath != "" {
+			_ = config.RememberISO(cfg.CDROMPath) // for the picker; losing it costs nothing
+		}
 		return vmCreatedMsg{name: cfg.Name}
 	}
 }
@@ -424,6 +468,10 @@ func (m CreateVMModel) View() string {
 	b.WriteString("\n\n")
 
 	switch m.step {
+	case stepISO:
+		b.WriteString(m.picker.View(m.width))
+		b.WriteString("\n")
+
 	case stepFirmware:
 		b.WriteString("  " + renderChoices(firmwareLabels(), m.fwIdx) + "\n\n")
 
@@ -475,6 +523,8 @@ func (m CreateVMModel) View() string {
 	keyHelp := "Tab/j/↓: next   Shift+Tab/k/↑: back   Esc: cancel"
 	if m.step.selector() {
 		keyHelp = "h/l/←/→: select   j/↓: next   k/↑: back   Esc: cancel"
+	} else if m.step == stepISO {
+		keyHelp = m.picker.keyHelp("pick and go on") + "   Tab: next   Shift+Tab: back   Esc: cancel"
 	} else if m.step == stepConfirm {
 		keyHelp = "Enter/j: create VM   k/Shift+Tab: back   Esc: cancel"
 	}

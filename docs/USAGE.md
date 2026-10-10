@@ -61,7 +61,7 @@ A linear 11-step wizard. Text input fields accept free typing; the selectors (fi
 | 3 | RAM (MiB) | Minimum 64, e.g. `2048` for 2 GiB |
 | 4 | Disk Size (GiB) | Minimum 1, e.g. `20` |
 | 5 | Additional disks | Optional. Comma-separated `[name:]size` in GiB, e.g. `data:50, 100` — see [Additional Disks](../README.md#additional-disks) |
-| 6 | Boot ISO | Full path to an `.iso` file, or leave blank |
+| 6 | Boot ISO | Optional. Pick an image used before or type the path of a new one — see [Choosing an ISO](#choosing-an-iso) |
 | 7 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot` — see [UEFI, Secure Boot and TPM 2.0](../README.md#uefi-secure-boot-and-tpm-20) |
 | 8 | TPM 2.0 | `disabled` · `enabled` (needs `swtpm`) |
 | 9 | Network type | `user (NAT)` · `tap (bridge)` · `none` |
@@ -75,6 +75,8 @@ A linear 11-step wizard. Text input fields accept free typing; the selectors (fi
 | `h` / `l` / `←` / `→` | Cycle a selector (steps 7–9) |
 | `Esc` | Cancel and return to VM list |
 
+On the Boot ISO step the arrow keys move within the [ISO dialog](#choosing-an-iso) instead: `Enter` takes the row under the cursor and moves on, `Tab` moves on with the choice as it is (a path typed on the *New path* row but not entered yet is taken too), `Shift-Tab` goes back.
+
 ## Edit VM form
 
 Press `e` on the list or detail screen to edit an existing VM. All properties are shown on one page, pre-filled with the current values.
@@ -85,7 +87,7 @@ Press `e` on the list or detail screen to edit an existing VM. All properties ar
 | CPU Cores / RAM (MiB) | Same rules as the create form |
 | Disk Size (GiB) | Can only grow (`qemu-img resize`); VM must be stopped. The guest still has to extend its own partitions/filesystem |
 | Extra Disks | Comma-separated `name:size` in GiB, e.g. `data:50, scratch:10`. A new disk is created and, on a running VM, hot-plugged right away; it arrives blank, so partition and format it in the guest. Growing or removing one needs the VM stopped. Removing a disk **deletes its image** once a second `Ctrl-s` confirms — see [Additional Disks](../README.md#additional-disks) |
-| Boot ISO | Path to an existing `.iso`, or blank to boot from disk (e.g. after installation). A running VM gets the new disc right away |
+| Boot ISO | `Enter` (or `l`) opens the [ISO dialog](#choosing-an-iso): an image used before, the path of a new one, or `(none)` to boot from disk (e.g. after installation). A running VM gets the new disc right away |
 | Firmware | `BIOS` · `UEFI` · `UEFI + Secure Boot`; VM must be stopped. Turning Secure Boot on rebuilds the VM's UEFI NVRAM |
 | TPM 2.0 | `disabled` · `enabled`; needs `swtpm` on the host |
 | Network | `user (NAT)` · `tap (bridge)` · `none` |
@@ -156,9 +158,9 @@ Press `i` on the list or detail screen. The top shows the boot ISO in the VM's C
 
 | Key | Action |
 |-----|--------|
-| `c` | Put a different ISO in the CD-ROM drive: type its path (`~` is your home directory) and press `Enter` |
+| `c` | Put a different ISO in the CD-ROM drive — opens the [ISO dialog](#choosing-an-iso) |
 | `e` | Eject the boot ISO, leaving the drive empty |
-| `a` | Attach an image as a USB drive, by path |
+| `a` | Attach an image as a USB drive — opens the [ISO dialog](#choosing-an-iso) |
 | `Space` / `Enter` / `d` | Detach the USB image under the cursor |
 | `r` | Re-check the image files |
 | `j` / `k`, `g` / `G` | Move cursor |
@@ -175,6 +177,37 @@ Press `i` on the list or detail screen. The top shows the boot ISO in the VM's C
 ```
 
 What the guest makes of a USB image depends on the image. A Linux guest mounts the ISO9660 filesystem straight off the stick (`mount /dev/sdb /mnt`), and a fresh VM with an empty disk boots a hybrid ISO — most Linux installers — from it under both BIOS and UEFI. Windows does not mount ISO9660 from a disk-class device, so a plain ISO shows up there as an unformatted drive; for Windows, put the ISO in the CD-ROM drive instead. Any raw disk image works as a USB drive, not just `.iso` files.
+
+## Choosing an ISO
+
+Every place that takes an image — the Boot ISO step of the create form, the Boot ISO field of the edit form, and `c` and `a` on the ISO hot-plug screen — opens the same dialog. It lists the images used before, each with its size or `✗ not found` when the file has gone, and the VMs that have it right now; the last row takes the path of a new one. In the forms a first row, `(none)`, stands for no boot ISO.
+
+```
+  Ostrich — ISO Hot-plug: debian-12
+
+  ● stopped — changes take effect when the VM is started
+
+  Boot ISO (CD-ROM drive)
+  the ISO to put in the drive: one used before, or the path of a new one; ~ is your home directory
+
+  ▸ /home/user/iso/debian-12.3.0-amd64-netinst.iso         ● 631 MiB  in use by debian-12
+    /home/user/iso/virtio-win.iso                          ● 611 MiB  in use by debian-12, win11
+    /home/user/iso/ubuntu-24.04-live-server-amd64.iso      ✗ not found
+    New path  /path/to/image.iso
+
+  Enter: insert   ↑/↓: move   d: forget   Esc: cancel
+```
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Take the row under the cursor: the image, the path typed on *New path* (`~` is your home directory), or `(none)` |
+| `↑` / `↓`, `Tab` / `Shift-Tab` | Move the cursor; `j` / `k`, `g` / `G` work too, except on the *New path* row, where letters type |
+| `d` | Forget the image under the cursor. One that a VM still has stays listed until it is ejected or detached there |
+| `Esc` | Close the dialog without changing anything |
+
+The dialog accepts only a path that names a readable file, and says so otherwise, so a typo cannot get into a VM. The cursor starts on the image the field holds, or on `(none)` and, with nothing used before, on *New path*.
+
+The list is kept in `recent_isos` of the [app config](../README.md#app-configuration): every image put in a CD-ROM drive or attached as a USB drive goes to the top, the newest 20 are kept. Images a VM has in its `vm.yaml` are offered as well, whether or not they are in that list, so the dialog is full from the first use.
 
 ## Templates
 

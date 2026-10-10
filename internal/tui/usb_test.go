@@ -10,11 +10,21 @@ import (
 )
 
 func key(s string) tea.KeyMsg {
-	if s == " " {
+	switch s {
+	case " ":
 		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
-	}
-	if s == "enter" {
+	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
